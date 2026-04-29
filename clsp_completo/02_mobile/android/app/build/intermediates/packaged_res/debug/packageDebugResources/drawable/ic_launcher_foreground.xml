@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Moto simplificada vista de perfil lateral — 108dp viewport (adaptive icon foreground)
+  El área segura es el círculo central de 72dp (18dp de padding por lado).
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+  <!-- Rueda trasera -->
+  <path
+      android:fillColor="#00000000"
+      android:strokeColor="#FFFFFF"
+      android:strokeWidth="4"
+      android:pathData="M28,72 m-13,0 a13,13 0 1,0 26,0 a13,13 0 1,0 -26,0"/>
+
+  <!-- Rueda delantera -->
+  <path
+      android:fillColor="#00000000"
+      android:strokeColor="#FFFFFF"
+      android:strokeWidth="4"
+      android:pathData="M80,72 m-13,0 a13,13 0 1,0 26,0 a13,13 0 1,0 -26,0"/>
+
+  <!-- Chasis / bastidor -->
+  <path
+      android:fillColor="#00000000"
+      android:strokeColor="#FFFFFF"
+      android:strokeWidth="3.5"
+      android:strokeLineCap="round"
+      android:pathData="M28,72 L42,48 L62,48 L80,72"/>
+
+  <!-- Depósito + asiento -->
+  <path
+      android:fillColor="#FFFFFF"
+      android:pathData="M40,48 Q44,34 58,34 Q68,34 70,42 L62,48 Z"/>
+
+  <!-- Manillar -->
+  <path
+      android:fillColor="#00000000"
+      android:strokeColor="#FFFFFF"
+      android:strokeWidth="3"
+      android:strokeLineCap="round"
+      android:pathData="M68,38 L76,34 L80,38"/>
+
+  <!-- Motor (bloque central) -->
+  <path
+      android:fillColor="#FFFFFF"
+      android:pathData="M44,56 L60,56 L62,66 L42,66 Z"/>
+
+  <!-- Escape -->
+  <path
+      android:fillColor="#00000000"
+      android:strokeColor="#FFFFFF"
+      android:strokeWidth="2.5"
+      android:strokeLineCap="round"
+      android:pathData="M42,66 Q36,68 30,72"/>
+
+  <!-- Horquilla delantera -->
+  <path
+      android:fillColor="#00000000"
+      android:strokeColor="#FFFFFF"
+      android:strokeWidth="3"
+      android:strokeLineCap="round"
+      android:pathData="M70,42 L76,60 L80,72"/>
+
+  <!-- Letras "CLSP" pequeñas debajo -->
+  <path
+      android:fillColor="#FFFFFF"
+      android:pathData="M33,90 L35,90 L35,86 L33,86 Z
+                         M37,90 L37,86 L40,86 L40,88 L38,88 L38,90 Z
+                         M42,86 L42,90 L45,90 L45,88 L43,88 L45,86 Z
+                         M47,86 L47,90 L49,90 L49,89 L50,88 L50,86 L48,86 L48,88 Z"/>
+
+</vector>

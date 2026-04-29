@@ -56,7 +56,8 @@ class UserCreateSerializer(serializers.ModelSerializer):
 class UserUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model  = User
-        fields = ['first_name', 'last_name', 'phone', 'address', 'fcm_token']
+        fields = ['first_name', 'last_name', 'phone', 'address', 'fcm_token', 'role']
+        extra_kwargs = {'role': {'required': False}}
 
 
 class CLSPTokenSerializer(TokenObtainPairSerializer):

@@ -1,4 +1,4 @@
-import {useState} from 'react';
+import {useState, useEffect} from 'react';
 import {useQuery, useQueryClient} from '@tanstack/react-query';
 import {useNavigate, useSearchParams} from 'react-router-dom';
 import {servicesAPI} from '../services/api';
@@ -31,6 +31,18 @@ export default function ServicesPage() {
   const [locations,  setLocations]  = useState({origin: null, destination: null});
   const [notes,      setNotes]      = useState('');
   const [saving,     setSaving]     = useState(false);
+
+  // Abrir modal automáticamente si viene ?create=1 (desde Dashboard)
+  useEffect(() => {
+    if (searchParams.get('create') === '1') {
+      setCreateOpen(true);
+      setSearchParams(prev => {
+        const next = new URLSearchParams(prev);
+        next.delete('create');
+        return next;
+      });
+    }
+  }, []);
 
   const {data, isLoading, refetch} = useQuery({
     queryKey: ['services', statusFilter],

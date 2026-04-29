@@ -1,27 +1,25 @@
+import json as _json
 from rest_framework import serializers
 from django.contrib.gis.geos import Point, GEOSGeometry
-from .models import Service, Route, Document
+from .models import Service, Route, Document, Vehicle
 from accounts.serializers import UserSerializer
 
 
 class RouteSerializer(serializers.ModelSerializer):
-    geometry = serializers.JSONField(help_text='LineString en formato GeoJSON')
+    geometry = serializers.SerializerMethodField()
 
     class Meta:
         model  = Route
-        fields = ['id', 'geometry', 'tolerance_meters', 'created_at']
-        read_only_fields = ['id', 'created_at']
+        fields = [
+            'id', 'geometry', 'encoded_polyline', 'polyline_steps',
+            'tolerance_meters', 'created_at',
+        ]
+        read_only_fields = fields
 
-    def validate_geometry(self, value):
-        try:
-            geom = GEOSGeometry(str(value))
-            if geom.geom_type != 'LineString':
-                raise serializers.ValidationError('La geometria debe ser un LineString.')
-            if len(geom.coords) < 2:
-                raise serializers.ValidationError('La ruta debe tener al menos 2 puntos.')
-            return geom
-        except (ValueError, TypeError):
-            raise serializers.ValidationError('GeoJSON invalido. Ejemplo: {"type":"LineString","coordinates":[[-77.03,-12.04],[-77.01,-12.02]]}')
+    def get_geometry(self, obj):
+        if obj.geometry:
+            return _json.loads(obj.geometry.geojson)
+        return None
 
 
 class DocumentSerializer(serializers.ModelSerializer):
@@ -78,6 +76,7 @@ class ServiceDetailSerializer(ServiceListSerializer):
         fields = ServiceListSerializer.Meta.fields + [
             'requester', 'assigned_motorizado', 'approved_by',
             'route', 'documents', 'approved_at', 'updated_at',
+            'customer_name', 'customer_phone', 'customer_address', 'stops', 'rating',
         ]
 
 
@@ -115,3 +114,38 @@ class ApproveServiceSerializer(serializers.Serializer):
     motorizado_id    = serializers.UUIDField(help_text='UUID del motorizado asignado')
     route_geometry   = serializers.JSONField(help_text='LineString GeoJSON de la ruta fija')
     tolerance_meters = serializers.FloatField(default=100.0, min_value=10.0, max_value=5000.0)
+    customer_name    = serializers.CharField(max_length=200, required=True)
+    customer_phone   = serializers.CharField(max_length=20,  required=False, allow_blank=True, default='')
+    customer_address = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
+    stops            = serializers.ListField(child=serializers.DictField(), required=False, allow_null=True, default=list)
+    # Waypoints para llamar a OSRM y obtener encoded_polyline + steps.
+    # Cada elemento: {"lat": float, "lng": float}
+    # Si se omite, se usa route_geometry directamente (sin OSRM).
+    osrm_waypoints   = serializers.ListField(
+        child=serializers.DictField(child=serializers.FloatField()),
+        required=False, allow_null=True, default=None,
+        help_text='Lista [{lat, lng}] para llamar a OSRM y obtener polyline codificada.',
+    )
+
+
+class VehicleSerializer(serializers.ModelSerializer):
+    assigned_motorizado_name = serializers.CharField(
+        source='assigned_motorizado.full_name', read_only=True, default=None
+    )
+
+    class Meta:
+        model  = Vehicle
+        fields = [
+            'id', 'plate', 'brand', 'model', 'year', 'status',
+            'assigned_motorizado', 'assigned_motorizado_name',
+            'mileage', 'fuel_consumption_rate',
+            'last_maintenance', 'next_maintenance', 'notes',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def validate_assigned_motorizado(self, value):
+        from accounts.models import User
+        if value and not User.objects.filter(id=value.id, role='motorizado', is_active=True).exists():
+            raise serializers.ValidationError('El usuario asignado debe ser un motorizado activo.')
+        return value

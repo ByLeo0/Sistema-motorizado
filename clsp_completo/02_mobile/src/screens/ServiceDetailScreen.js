@@ -1,19 +1,20 @@
-import React, {useState, useEffect, useCallback, useRef} from 'react';
+import React, {useState, useEffect, useCallback, useRef, memo} from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity,
   StyleSheet, Alert, ActivityIndicator,
   Modal, TextInput, Image, Share, Linking,
-  Dimensions, Platform,
+  Dimensions,
 } from 'react-native';
-import MapView, {Marker, Polyline} from 'react-native-maps';
+import MapView, {Marker, Polyline, UrlTile} from 'react-native-maps';
 import {check, request, PERMISSIONS, RESULTS} from 'react-native-permissions';
 import {launchCamera, launchImageLibrary} from 'react-native-image-picker';
 import {serviceAPI} from '../services/api';
 import {useServiceStore, useTrackingStore} from '../store';
 import {useBackgroundTracking} from '../hooks/useBackgroundTracking';
+import {useTheme} from '../context/ThemeContext';
 import Toast from 'react-native-toast-message';
 
-const {width: SCREEN_W, height: SCREEN_H} = Dimensions.get('window');
+const {height: SCREEN_H} = Dimensions.get('window');
 
 const DOC_TYPES = [
   {value: 'delivery_note', label: 'Guía de remisión'},
@@ -22,20 +23,52 @@ const DOC_TYPES = [
   {value: 'other',         label: 'Otro'},
 ];
 
-// ── Haversine ETA ─────────────────────────────────────────────────────────────
+const STATUS_LABEL = {
+  pending:    'Pendiente',
+  approved:   'Aprobado',
+  in_transit: 'En tránsito',
+  completed:  'Completado',
+  cancelled:  'Cancelado',
+  rejected:   'Rechazado',
+};
+
+// ── Decodificador de polyline (precision 5, OSRM) ─────────────────────────────
+function decodePolyline(encoded) {
+  if (!encoded) return [];
+  const coords = [];
+  let index = 0, lat = 0, lng = 0;
+  while (index < encoded.length) {
+    let result = 0, shift = 0, b;
+    do { b = encoded.charCodeAt(index++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+    lat += result & 1 ? ~(result >> 1) : result >> 1;
+    result = 0; shift = 0;
+    do { b = encoded.charCodeAt(index++) - 63; result |= (b & 0x1f) << shift; shift += 5; } while (b >= 0x20);
+    lng += result & 1 ? ~(result >> 1) : result >> 1;
+    coords.push({latitude: lat / 1e5, longitude: lng / 1e5});
+  }
+  return coords;
+}
+
 function calcETA(lat1, lng1, lat2, lng2, speedKmh = 25) {
   const R = 6371;
   const dLat = (lat2 - lat1) * Math.PI / 180;
   const dLng = (lng2 - lng1) * Math.PI / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
+  const a = Math.sin(dLat / 2) ** 2 +
     Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
   const distKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  const minutes = Math.round((distKm / speedKmh) * 60);
-  return {distKm: distKm.toFixed(1), minutes};
+  return {distKm: distKm.toFixed(1), minutes: Math.round((distKm / speedKmh) * 60)};
 }
 
-// ── Error boundary para el mapa ───────────────────────────────────────────────
+async function openInOsm(destLat, destLng) {
+  const osmand = `osmand.navigation:q=${destLat},${destLng}`;
+  const web    = `https://www.openstreetmap.org/directions?from=&to=${destLat},${destLng}`;
+  try {
+    const ok = await Linking.canOpenURL(osmand);
+    await Linking.openURL(ok ? osmand : web);
+  } catch { await Linking.openURL(web); }
+}
+
+// ── Error boundary ────────────────────────────────────────────────────────────
 class MapBoundary extends React.Component {
   state = {error: false};
   static getDerivedStateFromError() { return {error: true}; }
@@ -45,16 +78,121 @@ class MapBoundary extends React.Component {
   }
 }
 
+// ── Mapa OSM — memo para evitar re-mount en cada render ──────────────────────
+const RouteMapReal = memo(function RouteMapReal({
+  originLat, originLng, destLat, destLng,
+  mapRegion, routeCoords, locationTrail,
+  lastLocation, snappedPoint, isInTransit, isDeviated, height,
+}) {
+  return (
+    <MapView
+      style={[s.map, {height}]}
+      initialRegion={mapRegion}
+      mapType="none"
+      scrollEnabled
+      zoomEnabled
+    >
+      <UrlTile
+        urlTemplate="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+        maximumZ={19}
+        tileSize={256}
+        flipY={false}
+      />
+
+      {/* Ruta fija asignada — violeta */}
+      {routeCoords.length > 1 && (
+        <Polyline coordinates={routeCoords} strokeColor="#534AB7" strokeWidth={3} />
+      )}
+
+      {/* Rastro real del recorrido — naranja punteado */}
+      {locationTrail.length > 1 && isInTransit && (
+        <Polyline
+          coordinates={locationTrail}
+          strokeColor="#F59E0B"
+          strokeWidth={2}
+          lineDashPattern={[6, 3]}
+        />
+      )}
+
+      {/* Marcadores fijos */}
+      <Marker coordinate={{latitude: originLat, longitude: originLng}}
+        title="Origen" pinColor="#534AB7" />
+      <Marker coordinate={{latitude: destLat, longitude: destLng}}
+        title="Destino" pinColor="#D85A30" />
+
+      {/* Posición actual */}
+      {lastLocation && isInTransit && (
+        <Marker coordinate={{latitude: lastLocation.lat, longitude: lastLocation.lng}}
+          title="Mi posición" pinColor="#1D9E75" />
+      )}
+
+      {/* Punto snap sobre el eje de ruta */}
+      {snappedPoint && isInTransit && (
+        <Marker coordinate={{latitude: snappedPoint.lat, longitude: snappedPoint.lng}}
+          title="Posición en ruta"
+          pinColor={isDeviated ? '#F59E0B' : '#0F6E56'} />
+      )}
+    </MapView>
+  );
+});
+
+// ── Barra de señal GPS ────────────────────────────────────────────────────────
+const GPS_CFG = {
+  idle:      {color: '#9CA3AF', label: 'GPS inactivo'},
+  searching: {color: '#F59E0B', label: 'Buscando señal GPS...'},
+  active:    {color: '#1D9E75', label: 'Señal GPS activa'},
+  lost:      {color: '#D85A30', label: 'Señal GPS perdida'},
+};
+
+function GpsSignalBar({status, pings, bgColor}) {
+  const cfg = GPS_CFG[status] || GPS_CFG.idle;
+  return (
+    <View style={[s.gpsBar, {backgroundColor: bgColor, borderColor: cfg.color + '44'}]}>
+      <View style={[s.gpsDot, {backgroundColor: cfg.color}]} />
+      <Text style={[s.gpsBarLabel, {color: cfg.color}]}>{cfg.label}</Text>
+      {pings > 0 && (
+        <Text style={[s.gpsBarPings, {color: cfg.color + 'AA'}]}> · {pings} pings</Text>
+      )}
+    </View>
+  );
+}
+
+// ── Helpers con tema ──────────────────────────────────────────────────────────
+function Row({label, value, valueColor, c}) {
+  return (
+    <View style={[s.row, {borderBottomColor: c.separator}]}>
+      <Text style={[s.rowLabel, {color: c.hint}]}>{label}</Text>
+      <Text style={[s.rowValue, {color: valueColor || c.text}]}>{value}</Text>
+    </View>
+  );
+}
+
+function InfoBlock({icon, label, c, children}) {
+  return (
+    <View style={[s.infoBlock, {borderBottomColor: c.separator}]}>
+      <View style={s.infoBlockLeft}>
+        <Text style={s.infoIcon}>{icon}</Text>
+      </View>
+      <View style={s.infoBlockRight}>
+        <Text style={[s.infoLabel, {color: c.hint}]}>{label}</Text>
+        {children}
+      </View>
+    </View>
+  );
+}
+
+// ── Pantalla principal ────────────────────────────────────────────────────────
 export default function ServiceDetailScreen({route, navigation}) {
   const {serviceId} = route.params;
-  const [service,   setService]  = useState(null);
-  const [loading,   setLoading]  = useState(true);
-  const [acting,    setActing]   = useState(false);
-  const [showMap,   setShowMap]  = useState(false);
-  const [fullMap,   setFullMap]  = useState(false);
-  const [mapError,  setMapError] = useState(false);
+  const {colors: c} = useTheme();
 
-  // Document modal
+  const [service,       setService]       = useState(null);
+  const [loading,       setLoading]       = useState(true);
+  const [acting,        setActing]        = useState(false);
+  const [showMap,       setShowMap]       = useState(false);
+  const [fullMap,       setFullMap]       = useState(false);
+
+  // Doc modal
   const [docModal,       setDocModal]       = useState(false);
   const [docType,        setDocType]        = useState('delivery_note');
   const [recipientName,  setRecipientName]  = useState('');
@@ -64,13 +202,17 @@ export default function ServiceDetailScreen({route, navigation}) {
   const [docSubmitting,  setDocSubmitting]  = useState(false);
   const [uploadedDocs,   setUploadedDocs]   = useState([]);
 
-  const updateStatus = useServiceStore(s => s.updateServiceStatus);
-  const isTracking   = useTrackingStore(s => s.isTracking);
-  const isConnected  = useTrackingStore(s => s.isConnected);
-  const deviationM   = useTrackingStore(s => s.deviationMeters);
-  const isDeviated   = useTrackingStore(s => s.isDeviated);
-  const lastLocation = useTrackingStore(s => s.lastLocation);
-  const totalPings   = useTrackingStore(s => s.totalPings);
+  const updateStatus    = useServiceStore(s => s.updateServiceStatus);
+  const isTracking      = useTrackingStore(s => s.isTracking);
+  const isConnected     = useTrackingStore(s => s.isConnected);
+  const deviationM      = useTrackingStore(s => s.deviationMeters);
+  const isDeviated      = useTrackingStore(s => s.isDeviated);
+  const routeStatus     = useTrackingStore(s => s.routeStatus);
+  const snappedPoint    = useTrackingStore(s => s.snappedPoint);
+  const lastLocation    = useTrackingStore(s => s.lastLocation);
+  const totalPings      = useTrackingStore(s => s.totalPings);
+  const gpsSignalStatus = useTrackingStore(s => s.gpsSignalStatus);
+  const locationTrail   = useTrackingStore(s => s.locationTrail);
 
   const {startTracking, stopTracking} = useBackgroundTracking(
     service?.status === 'in_transit' ? serviceId : null,
@@ -81,7 +223,7 @@ export default function ServiceDetailScreen({route, navigation}) {
       const {data} = await serviceAPI.detail(serviceId);
       setService(data);
       if (data.documents) setUploadedDocs(data.documents);
-    } catch (err) {
+    } catch {
       Alert.alert('Error', 'No se pudo cargar el servicio.');
       navigation.goBack();
     } finally {
@@ -91,22 +233,18 @@ export default function ServiceDetailScreen({route, navigation}) {
 
   useEffect(() => { fetchDetail(); }, [fetchDetail]);
 
-  // ── GPS permission ──────────────────────────────────────────────────────────
+  // GPS permission
   const ensureGPS = async () => {
     const perm   = PERMISSIONS.ANDROID.ACCESS_FINE_LOCATION;
     const result = await check(perm);
     if (result === RESULTS.GRANTED) return true;
-    if (result === RESULTS.DENIED) {
-      const r2 = await request(perm);
-      return r2 === RESULTS.GRANTED;
-    }
+    if (result === RESULTS.DENIED) return (await request(perm)) === RESULTS.GRANTED;
     return false;
   };
 
-  // ── Start ───────────────────────────────────────────────────────────────────
+  // Iniciar
   const handleStart = async () => {
-    const hasGPS = await ensureGPS();
-    if (!hasGPS) {
+    if (!await ensureGPS()) {
       Alert.alert('GPS requerido',
         'Activa el permiso de ubicación: Ajustes → Aplicaciones → CLSP → Permisos → Ubicación.');
       return;
@@ -120,21 +258,17 @@ export default function ServiceDetailScreen({route, navigation}) {
           setService(prev => ({...prev, status: 'in_transit'}));
           updateStatus(serviceId, 'in_transit');
           await startTracking();
-          Toast.show({type: 'success', text1: 'Servicio iniciado', text2: 'GPS activo.'});
         } catch (err) {
           Alert.alert('Error', err.response?.data?.error || 'No se pudo iniciar.');
-        } finally {
-          setActing(false);
-        }
+        } finally { setActing(false); }
       }},
     ]);
   };
 
-  // ── Complete ────────────────────────────────────────────────────────────────
+  // Completar
   const handleComplete = async () => {
     if (uploadedDocs.length === 0) {
-      Alert.alert('Documento requerido',
-        'Sube al menos un documento antes de completar.', [{text: 'Entendido'}]);
+      Alert.alert('Documento requerido', 'Sube al menos un documento antes de completar.');
       return;
     }
     Alert.alert('Completar entrega', '¿Confirmas que la entrega fue realizada?', [
@@ -146,59 +280,35 @@ export default function ServiceDetailScreen({route, navigation}) {
           await serviceAPI.complete(serviceId);
           setService(prev => ({...prev, status: 'completed'}));
           updateStatus(serviceId, 'completed');
-          Alert.alert(
-            '✓ Entrega completada',
-            'El servicio fue marcado como entregado exitosamente.',
-            [{text: 'Aceptar'}],   // Usuario decide cuándo volver
-          );
+          Alert.alert('Entrega completada', 'El servicio fue marcado como entregado exitosamente.');
         } catch (err) {
           Alert.alert('Error', err.response?.data?.error || 'No se pudo completar.');
-        } finally {
-          setActing(false);
-        }
+        } finally { setActing(false); }
       }},
     ]);
   };
 
-  // ── Share route ─────────────────────────────────────────────────────────────
   const handleShare = async () => {
     if (!service) return;
-    const url = `https://www.google.com/maps/dir/${service.origin_lat},${service.origin_lng}/${service.destination_lat},${service.destination_lng}`;
+    const url = `https://www.openstreetmap.org/directions?from=${service.origin_lat},${service.origin_lng}&to=${service.destination_lat},${service.destination_lng}`;
     try {
       await Share.share({
-        message: `🚚 CLSP — Ruta de entrega\nOrigen: ${service.origin_lat.toFixed(5)}, ${service.origin_lng.toFixed(5)}\nDestino: ${service.destination_lat.toFixed(5)}, ${service.destination_lng.toFixed(5)}\nVer en mapa: ${url}`,
+        message: `CLSP — Ruta de entrega\nOrigen: ${service.origin_lat?.toFixed(5)}, ${service.origin_lng?.toFixed(5)}\nDestino: ${service.destination_lat?.toFixed(5)}, ${service.destination_lng?.toFixed(5)}\nVer: ${url}`,
         title: 'Ruta CLSP',
       });
     } catch (_) {}
   };
 
-  // ── Open in Google Maps ─────────────────────────────────────────────────────
-  const openInGoogleMaps = async () => {
+  const handleOpenNavigation = async () => {
     if (!service) return;
-    const url = Platform.select({
-      android: `google.navigation:q=${service.destination_lat},${service.destination_lng}&mode=d`,
-      ios:     `comgooglemaps://?daddr=${service.destination_lat},${service.destination_lng}&directionsmode=driving`,
-    });
-    const fallback = `https://www.google.com/maps/dir/${service.origin_lat},${service.origin_lng}/${service.destination_lat},${service.destination_lng}`;
-    try {
-      const canOpen = await Linking.canOpenURL(url);
-      await Linking.openURL(canOpen ? url : fallback);
-    } catch (_) {
-      await Linking.openURL(fallback);
-    }
+    await openInOsm(service.destination_lat, service.destination_lng);
   };
 
-  // ── Document photo picker ───────────────────────────────────────────────────
+  // Doc photo
   const pickDocPhoto = () => {
     Alert.alert('Adjuntar imagen', '¿Cómo deseas adjuntar?', [
-      {text: 'Cámara', onPress: async () => {
-        const r = await launchCamera({mediaType: 'photo', quality: 0.8});
-        if (!r.didCancel && r.assets?.[0]) setDocPhoto(r.assets[0]);
-      }},
-      {text: 'Galería', onPress: async () => {
-        const r = await launchImageLibrary({mediaType: 'photo', quality: 0.8});
-        if (!r.didCancel && r.assets?.[0]) setDocPhoto(r.assets[0]);
-      }},
+      {text: 'Cámara',   onPress: async () => { const r = await launchCamera({mediaType: 'photo', quality: 0.8}); if (!r.didCancel && r.assets?.[0]) setDocPhoto(r.assets[0]); }},
+      {text: 'Galería',  onPress: async () => { const r = await launchImageLibrary({mediaType: 'photo', quality: 0.8}); if (!r.didCancel && r.assets?.[0]) setDocPhoto(r.assets[0]); }},
       {text: 'Cancelar', style: 'cancel'},
     ]);
   };
@@ -209,254 +319,264 @@ export default function ServiceDetailScreen({route, navigation}) {
   };
 
   const handleDocSubmit = async () => {
-    if (!docPhoto) { Alert.alert('Error', 'Adjunta una imagen del documento.'); return; }
-    if (!recipientName.trim()) { Alert.alert('Error', 'El nombre es obligatorio.'); return; }
+    if (!docPhoto)              { Alert.alert('Error', 'Adjunta una imagen del documento.'); return; }
+    if (!recipientName.trim())  { Alert.alert('Error', 'El nombre es obligatorio.');        return; }
     setDocSubmitting(true);
     try {
-      const formData = new FormData();
-      formData.append('doc_type', docType);
-      formData.append('recipient_name', recipientName.trim());
-      formData.append('recipient_phone', recipientPhone.trim());
-      formData.append('recipient_address', recipientAddr.trim());
-      formData.append('file', {
-        uri: docPhoto.uri, type: docPhoto.type || 'image/jpeg',
-        name: docPhoto.fileName || `doc_${Date.now()}.jpg`,
-      });
-      const {data} = await serviceAPI.uploadDocument(serviceId, formData);
+      const fd = new FormData();
+      fd.append('doc_type',          docType);
+      fd.append('recipient_name',    recipientName.trim());
+      fd.append('recipient_phone',   recipientPhone.trim());
+      fd.append('recipient_address', recipientAddr.trim());
+      fd.append('file', {uri: docPhoto.uri, type: docPhoto.type || 'image/jpeg', name: docPhoto.fileName || `doc_${Date.now()}.jpg`});
+      const {data} = await serviceAPI.uploadDocument(serviceId, fd);
       setUploadedDocs(prev => [...prev, data]);
       Toast.show({type: 'success', text1: 'Documento subido'});
       setDocModal(false); resetDocForm();
     } catch (err) {
       Alert.alert('Error', err.response?.data?.error || 'No se pudo subir el documento.');
-    } finally {
-      setDocSubmitting(false);
-    }
+    } finally { setDocSubmitting(false); }
   };
 
-  // ── Computed values ─────────────────────────────────────────────────────────
-  const mapRegion = service ? {
-    latitude:      (service.origin_lat + service.destination_lat) / 2,
-    longitude:     (service.origin_lng + service.destination_lng) / 2,
-    latitudeDelta:  Math.abs(service.origin_lat - service.destination_lat) * 1.6 + 0.01,
-    longitudeDelta: Math.abs(service.origin_lng - service.destination_lng) * 1.6 + 0.01,
-  } : null;
-
-  const routeCoords = service?.route?.geometry?.coordinates
-    ? service.route.geometry.coordinates.map(([lng, lat]) => ({latitude: lat, longitude: lng}))
-    : [];
-
-  const eta = service
-    ? calcETA(service.origin_lat, service.origin_lng,
-              service.destination_lat, service.destination_lng,
-              lastLocation?.speed > 0 ? lastLocation.speed : 25)
-    : null;
-
-  const currentETA = lastLocation && service
-    ? calcETA(lastLocation.lat, lastLocation.lng,
-              service.destination_lat, service.destination_lng,
-              lastLocation.speed > 0 ? lastLocation.speed : 25)
-    : eta;
-
-  if (loading) {
-    return <View style={styles.center}><ActivityIndicator size="large" color="#534AB7" /></View>;
-  }
-
+  // ── Valores derivados ──────────────────────────────────────────────────────
   const isInTransit = service?.status === 'in_transit';
   const isApproved  = service?.status === 'approved';
   const isCompleted = service?.status === 'completed';
 
-  const MapContent = ({height}) => (
-    <MapView
-      style={[styles.map, {height}]}
-      initialRegion={mapRegion}
-      showsUserLocation={isInTransit}
-      showsMyLocationButton={isInTransit}
-      scrollEnabled
-      zoomEnabled
-      onMapReady={() => setMapError(false)}
-    >
-      <Marker
-        coordinate={{latitude: service.origin_lat, longitude: service.origin_lng}}
-        title="Origen" pinColor="#534AB7"
-      />
-      <Marker
-        coordinate={{latitude: service.destination_lat, longitude: service.destination_lng}}
-        title="Destino" pinColor="#D85A30"
-      />
-      {lastLocation && isInTransit && (
-        <Marker
-          coordinate={{latitude: lastLocation.lat, longitude: lastLocation.lng}}
-          title="Mi ubicación" pinColor="#1D9E75"
-        />
-      )}
-      {routeCoords.length > 1 && (
-        <Polyline coordinates={routeCoords} strokeColor="#1D9E75" strokeWidth={3} />
-      )}
-    </MapView>
+  const mapRegion = service ? {
+    latitude:       (service.origin_lat + service.destination_lat) / 2,
+    longitude:      (service.origin_lng + service.destination_lng) / 2,
+    latitudeDelta:  Math.abs(service.origin_lat - service.destination_lat) * 1.6 + 0.01,
+    longitudeDelta: Math.abs(service.origin_lng - service.destination_lng) * 1.6 + 0.01,
+  } : null;
+
+  const routeCoords = service?.route?.encoded_polyline
+    ? decodePolyline(service.route.encoded_polyline)
+    : (service?.route?.geometry?.coordinates
+        ? service.route.geometry.coordinates.map(([ln, la]) => ({latitude: la, longitude: ln}))
+        : []);
+
+  const speed = lastLocation?.speed > 0 ? lastLocation.speed : 25;
+  const eta = service
+    ? calcETA(service.origin_lat, service.origin_lng, service.destination_lat, service.destination_lng, speed)
+    : null;
+  const currentETA = lastLocation && service
+    ? calcETA(lastLocation.lat, lastLocation.lng, service.destination_lat, service.destination_lng, speed)
+    : eta;
+
+  // Badge de estado
+  const badgeStyle = isDeviated
+    ? {bg: c.dangerBg,   text: c.danger}
+    : isCompleted
+    ? {bg: c.successBg,  text: c.success}
+    : isInTransit
+    ? {bg: c.primaryBg,  text: c.primary}
+    : isApproved
+    ? {bg: c.badgeApproved.bg, text: c.badgeApproved.text}
+    : {bg: c.cardBorder, text: c.subtext};
+
+  const statusText = isDeviated ? 'DESVIADO'
+    : isCompleted  ? 'Completado'
+    : isInTransit  ? routeStatus
+    : isApproved   ? 'Aprobado'
+    : STATUS_LABEL[service?.status] || service?.status;
+
+  if (loading) {
+    return (
+      <View style={[s.center, {backgroundColor: c.bg}]}>
+        <ActivityIndicator size="large" color={c.primary} />
+      </View>
+    );
+  }
+
+  const mapFallback = (
+    <View style={[s.mapFallback, {backgroundColor: c.cardBorder}]}>
+      <Text style={[s.mapFallbackText, {color: c.hint}]}>El mapa no pudo cargar.</Text>
+      <TouchableOpacity style={[s.osmBtn, {backgroundColor: c.primaryBg}]} onPress={handleOpenNavigation}>
+        <Text style={[s.osmBtnText, {color: c.primary}]}>Abrir en OSM</Text>
+      </TouchableOpacity>
+    </View>
   );
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView style={[s.container, {backgroundColor: c.bg}]} contentContainerStyle={s.content}>
 
       {/* ── Cabecera ── */}
-      <View style={styles.header}>
-        <View style={styles.headerTop}>
-          <View>
-            <Text style={styles.headerNumber}>
+      <View style={[s.card, {backgroundColor: c.card, borderColor: c.cardBorder}]}>
+        <View style={s.headerTop}>
+          <View style={{flex: 1}}>
+            <Text style={[s.headerNumber, {color: c.text}]}>
               {service?.number ? `Servicio #${String(service.number).padStart(4, '0')}` : 'Servicio'}
             </Text>
             {service?.created_at && (
-              <Text style={styles.headerDate}>
+              <Text style={[s.headerDate, {color: c.hint}]}>
                 {new Date(service.created_at).toLocaleDateString('es-PE', {day: '2-digit', month: 'long', year: 'numeric'})}
               </Text>
             )}
           </View>
-          <View style={[
-            styles.statusChip,
-            isCompleted  && styles.chipCompleted,
-            isInTransit  && (isDeviated ? styles.chipDeviated : styles.chipInTransit),
-            isApproved   && styles.chipApproved,
-          ]}>
-            <Text style={styles.statusChipText}>
-              {isCompleted ? '✓ Completado'
-                : isInTransit ? (isDeviated ? '⚠ Fuera de ruta' : '● En tránsito')
-                : isApproved  ? '◉ Aprobado'
-                : service?.status}
-            </Text>
+          <View style={[s.badge, {backgroundColor: badgeStyle.bg}]}>
+            <Text style={[s.badgeText, {color: badgeStyle.text}]}>{statusText}</Text>
           </View>
         </View>
+
         {isInTransit && (
-          <View style={styles.gpsBar}>
-            <View style={[styles.gpsDot, {backgroundColor: isConnected ? '#1D9E75' : '#F59E0B'}]} />
-            <Text style={styles.gpsBarText}>
-              {isConnected ? 'GPS activo' : 'GPS reconectando...'} · {totalPings} actualizaciones
-            </Text>
-          </View>
+          <GpsSignalBar status={gpsSignalStatus} pings={totalPings} bgColor={c.gpuBar} />
         )}
       </View>
 
       {/* ── ETA ── */}
       {(isApproved || isInTransit) && currentETA && (
-        <View style={styles.etaCard}>
-          <View style={styles.etaItem}>
-            <Text style={styles.etaLabel}>Distancia</Text>
-            <Text style={styles.etaValue}>{currentETA.distKm} km</Text>
+        <View style={[s.etaCard, {backgroundColor: c.card, borderColor: c.cardBorder}]}>
+          <View style={s.etaItem}>
+            <Text style={[s.etaLabel, {color: c.hint}]}>Distancia</Text>
+            <Text style={[s.etaValue, {color: c.text}]}>{currentETA.distKm} km</Text>
           </View>
-          <View style={styles.etaDivider} />
-          <View style={styles.etaItem}>
-            <Text style={styles.etaLabel}>Tiempo est.</Text>
-            <Text style={styles.etaValue}>{currentETA.minutes} min</Text>
+          <View style={[s.etaDivider, {backgroundColor: c.separator}]} />
+          <View style={s.etaItem}>
+            <Text style={[s.etaLabel, {color: c.hint}]}>Tiempo est.</Text>
+            <Text style={[s.etaValue, {color: c.text}]}>{currentETA.minutes} min</Text>
           </View>
-          <View style={styles.etaDivider} />
-          <TouchableOpacity style={styles.etaItem} onPress={openInGoogleMaps}>
-            <Text style={styles.etaLabel}>Navegar</Text>
-            <Text style={[styles.etaValue, {color: '#534AB7'}]}>Google Maps</Text>
+          <View style={[s.etaDivider, {backgroundColor: c.separator}]} />
+          <TouchableOpacity style={s.etaItem} onPress={handleOpenNavigation}>
+            <Text style={[s.etaLabel, {color: c.hint}]}>Navegar</Text>
+            <Text style={[s.etaValue, {color: c.primary}]}>OSM</Text>
           </TouchableOpacity>
         </View>
       )}
 
       {/* ── Mapa ── */}
-      <View style={styles.card}>
-        <View style={styles.rowBetween}>
-          <Text style={styles.sectionTitle}>Mapa del recorrido</Text>
+      <View style={[s.card, {backgroundColor: c.card, borderColor: c.cardBorder}]}>
+        <View style={s.rowBetween}>
+          <Text style={[s.sectionTitle, {color: c.text}]}>Mapa del recorrido</Text>
           <View style={{flexDirection: 'row', gap: 8}}>
-            <TouchableOpacity style={styles.toggleMapBtn} onPress={() => setShowMap(v => !v)}>
-              <Text style={styles.toggleMapText}>{showMap ? 'Ocultar' : 'Ver mapa'}</Text>
+            <TouchableOpacity style={[s.toggleBtn, {backgroundColor: c.primaryBg}]} onPress={() => setShowMap(v => !v)}>
+              <Text style={[s.toggleBtnText, {color: c.primary}]}>{showMap ? 'Ocultar' : 'Ver mapa'}</Text>
             </TouchableOpacity>
             {showMap && (
-              <TouchableOpacity style={styles.toggleMapBtn} onPress={() => setFullMap(true)}>
-                <Text style={styles.toggleMapText}>⛶ Expandir</Text>
+              <TouchableOpacity style={[s.toggleBtn, {backgroundColor: c.primaryBg}]} onPress={() => setFullMap(true)}>
+                <Text style={[s.toggleBtnText, {color: c.primary}]}>Expandir</Text>
               </TouchableOpacity>
             )}
           </View>
         </View>
-        {showMap && mapRegion && (
-          mapError ? (
-            <View style={styles.mapFallback}>
-              <Text style={styles.mapFallbackText}>El mapa no pudo cargar.</Text>
-              <TouchableOpacity style={styles.openMapsBtn} onPress={openInGoogleMaps}>
-                <Text style={styles.openMapsBtnText}>Abrir en Google Maps</Text>
-              </TouchableOpacity>
+
+        {/* Leyenda de colores */}
+        {showMap && routeCoords.length > 0 && (
+          <View style={s.legend}>
+            <View style={s.legendItem}>
+              <View style={[s.legendLine, {backgroundColor: '#534AB7'}]} />
+              <Text style={[s.legendText, {color: c.hint}]}>Ruta asignada</Text>
             </View>
-          ) : (
-            <MapBoundary fallback={
-              <View style={styles.mapFallback}>
-                <Text style={styles.mapFallbackText}>Error al cargar el mapa.</Text>
-                <TouchableOpacity style={styles.openMapsBtn} onPress={openInGoogleMaps}>
-                  <Text style={styles.openMapsBtnText}>Abrir en Google Maps</Text>
-                </TouchableOpacity>
+            {isInTransit && locationTrail.length > 1 && (
+              <View style={s.legendItem}>
+                <View style={[s.legendLine, {backgroundColor: '#F59E0B'}]} />
+                <Text style={[s.legendText, {color: c.hint}]}>Recorrido real</Text>
               </View>
-            }>
-              <MapContent height={200} />
-            </MapBoundary>
-          )
+            )}
+          </View>
         )}
-        {!showMap && (
-          <TouchableOpacity onPress={openInGoogleMaps} style={styles.openMapsBtn}>
-            <Text style={styles.openMapsBtnText}>Abrir navegación en Google Maps</Text>
+
+        {showMap && mapRegion ? (
+          <MapBoundary fallback={mapFallback}>
+            <RouteMapReal
+              originLat={service.origin_lat}  originLng={service.origin_lng}
+              destLat={service.destination_lat} destLng={service.destination_lng}
+              mapRegion={mapRegion}
+              routeCoords={routeCoords}
+              locationTrail={locationTrail}
+              lastLocation={lastLocation}
+              snappedPoint={snappedPoint}
+              isInTransit={isInTransit}
+              isDeviated={isDeviated}
+              height={220}
+            />
+          </MapBoundary>
+        ) : !showMap ? (
+          <TouchableOpacity onPress={handleOpenNavigation} style={[s.osmBtn, {backgroundColor: c.primaryBg}]}>
+            <Text style={[s.osmBtnText, {color: c.primary}]}>Abrir navegación en OSM</Text>
           </TouchableOpacity>
-        )}
+        ) : mapFallback}
       </View>
 
       {/* ── GPS en vivo ── */}
       {isInTransit && (
-        <View style={[styles.card, isDeviated && styles.cardAlert]}>
-          <Text style={styles.sectionTitle}>Ubicación en tiempo real</Text>
+        <View style={[s.card, {backgroundColor: c.card, borderColor: isDeviated ? c.danger : c.cardBorder, borderWidth: isDeviated ? 1.5 : 1}]}>
+          <Text style={[s.sectionTitle, {color: c.text}]}>Ubicación en tiempo real</Text>
           {lastLocation ? (
             <>
-              <Row label="Latitud"   value={lastLocation.lat?.toFixed(6)} />
-              <Row label="Longitud"  value={lastLocation.lng?.toFixed(6)} />
-              <Row label="Velocidad" value={`${lastLocation.speed?.toFixed(1)} km/h`} />
+              <Row label="Latitud"   value={lastLocation.lat?.toFixed(6)}               c={c} />
+              <Row label="Longitud"  value={lastLocation.lng?.toFixed(6)}               c={c} />
+              <Row label="Velocidad" value={`${lastLocation.speed?.toFixed(1)} km/h`}   c={c} />
+              <Row label="Precisión" value={`±${lastLocation.accuracy?.toFixed(0)} m`}  c={c} />
               <Row label="Desvío"    value={`${deviationM.toFixed(0)} m`}
-                   valueColor={isDeviated ? '#D85A30' : '#0F6E56'} />
+                   valueColor={isDeviated ? c.danger : c.success} c={c} />
+              <Row label="Estado"    value={routeStatus}
+                   valueColor={isDeviated ? c.danger : c.success} c={c} />
             </>
           ) : (
-            <Text style={styles.waiting}>Obteniendo ubicación GPS...</Text>
+            <Text style={[s.waiting, {color: c.hint}]}>
+              {gpsSignalStatus === 'searching'
+                ? 'Buscando señal GPS...'
+                : gpsSignalStatus === 'lost'
+                ? 'Señal GPS perdida. Verifica el GPS del dispositivo.'
+                : 'Obteniendo ubicación...'}
+            </Text>
           )}
         </View>
       )}
 
       {/* ── Detalles ── */}
-      <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Detalles del servicio</Text>
+      <View style={[s.card, {backgroundColor: c.card, borderColor: c.cardBorder}]}>
+        <Text style={[s.sectionTitle, {color: c.text}]}>Detalles del servicio</Text>
 
-        <InfoBlock icon="📍" label="Punto de origen">
-          <Text style={styles.infoValue}>
+        <InfoBlock icon="📍" label="Punto de origen" c={c}>
+          <Text style={[s.infoValue, {color: c.subtext}]}>
             {`${service?.origin_lat?.toFixed(5)}, ${service?.origin_lng?.toFixed(5)}`}
           </Text>
           <TouchableOpacity onPress={() => Linking.openURL(
-            `https://www.google.com/maps?q=${service?.origin_lat},${service?.origin_lng}`
+            `https://www.openstreetmap.org/?mlat=${service?.origin_lat}&mlon=${service?.origin_lng}&zoom=17`
           )}>
-            <Text style={styles.infoLink}>Ver en mapa →</Text>
+            <Text style={[s.infoLink, {color: c.primary}]}>Ver en mapa →</Text>
           </TouchableOpacity>
         </InfoBlock>
 
-        <InfoBlock icon="🏁" label="Punto de destino">
-          <Text style={styles.infoValue}>
+        <InfoBlock icon="🏁" label="Punto de destino" c={c}>
+          <Text style={[s.infoValue, {color: c.subtext}]}>
             {`${service?.destination_lat?.toFixed(5)}, ${service?.destination_lng?.toFixed(5)}`}
           </Text>
           <TouchableOpacity onPress={() => Linking.openURL(
-            `https://www.google.com/maps?q=${service?.destination_lat},${service?.destination_lng}`
+            `https://www.openstreetmap.org/?mlat=${service?.destination_lat}&mlon=${service?.destination_lng}&zoom=17`
           )}>
-            <Text style={styles.infoLink}>Ver en mapa →</Text>
+            <Text style={[s.infoLink, {color: c.primary}]}>Ver en mapa →</Text>
           </TouchableOpacity>
         </InfoBlock>
 
         {service?.notes && (
-          <InfoBlock icon="📝" label="Notas">
-            <Text style={styles.infoValue}>{service.notes}</Text>
+          <InfoBlock icon="📝" label="Notas" c={c}>
+            <Text style={[s.infoValue, {color: c.subtext}]}>{service.notes}</Text>
           </InfoBlock>
         )}
 
         {service?.route && (
-          <InfoBlock icon="🛡" label="Corredor de ruta">
-            <Text style={styles.infoValue}>Tolerancia de {service.route.tolerance_meters} m</Text>
+          <InfoBlock icon="🛡" label="Corredor de ruta" c={c}>
+            <Text style={[s.infoValue, {color: c.subtext}]}>
+              Tolerancia de {service.route.tolerance_meters} m
+            </Text>
           </InfoBlock>
         )}
 
+        {service?.customer_name ? (
+          <InfoBlock icon="👤" label="Destinatario" c={c}>
+            <Text style={[s.infoValue, {color: c.subtext}]}>{service.customer_name}</Text>
+            {service.customer_phone ? (
+              <Text style={[s.infoValue, {color: c.hint, marginTop: 2}]}>{service.customer_phone}</Text>
+            ) : null}
+          </InfoBlock>
+        ) : null}
+
         {service?.approved_at && (
-          <InfoBlock icon="🕐" label="Aprobado">
-            <Text style={styles.infoValue}>
+          <InfoBlock icon="🕐" label="Aprobado" c={c}>
+            <Text style={[s.infoValue, {color: c.subtext}]}>
               {new Date(service.approved_at).toLocaleString('es-PE', {
                 day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
               })}
@@ -464,129 +584,145 @@ export default function ServiceDetailScreen({route, navigation}) {
           </InfoBlock>
         )}
 
-        <View style={styles.idRow}>
-          <Text style={styles.idText}>ID: {service?.id?.slice(-12).toUpperCase()}</Text>
+        <View style={s.idRow}>
+          <Text style={[s.idText, {color: c.hint}]}>ID: {service?.id?.slice(-12).toUpperCase()}</Text>
         </View>
       </View>
 
       {/* ── Documentos ── */}
       {(isInTransit || isCompleted) && (
-        <View style={styles.card}>
-          <View style={styles.rowBetween}>
-            <Text style={styles.sectionTitle}>Documentos ({uploadedDocs.length})</Text>
+        <View style={[s.card, {backgroundColor: c.card, borderColor: c.cardBorder}]}>
+          <View style={s.rowBetween}>
+            <Text style={[s.sectionTitle, {color: c.text}]}>Documentos ({uploadedDocs.length})</Text>
             {isInTransit && (
-              <TouchableOpacity style={styles.scanBtn} onPress={() => setDocModal(true)}>
-                <Text style={styles.scanBtnText}>+ Subir doc</Text>
+              <TouchableOpacity style={[s.scanBtn, {backgroundColor: c.success}]} onPress={() => setDocModal(true)}>
+                <Text style={s.scanBtnText}>+ Subir doc</Text>
               </TouchableOpacity>
             )}
           </View>
           {uploadedDocs.length === 0 && (
-            <Text style={styles.waiting}>Sin documentos. Sube la guía de remisión.</Text>
+            <Text style={[s.waiting, {color: c.hint}]}>Sin documentos. Sube la guía de remisión.</Text>
           )}
           {uploadedDocs.map(doc => (
-            <View key={doc.id} style={styles.docItem}>
+            <View key={doc.id} style={[s.docItem, {borderBottomColor: c.separator}]}>
               <View>
-                <Text style={styles.docType}>{_docLabel(doc.doc_type)}</Text>
-                {doc.recipient_name ? <Text style={styles.docSub}>{doc.recipient_name}</Text> : null}
+                <Text style={[s.docType, {color: c.text}]}>{_docLabel(doc.doc_type)}</Text>
+                {doc.recipient_name ? <Text style={[s.docSub, {color: c.hint}]}>{doc.recipient_name}</Text> : null}
               </View>
-              <Text style={styles.docDate}>{new Date(doc.uploaded_at).toLocaleTimeString('es-PE')}</Text>
+              <Text style={[s.docDate, {color: c.hint}]}>{new Date(doc.uploaded_at).toLocaleTimeString('es-PE')}</Text>
             </View>
           ))}
         </View>
       )}
 
       {/* ── Acciones ── */}
-      <View style={styles.actions}>
+      <View style={s.actions}>
         {isApproved && (
-          <TouchableOpacity style={[styles.btn, styles.btnStart]} onPress={handleStart} disabled={acting}>
-            {acting ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Iniciar recorrido</Text>}
+          <TouchableOpacity style={[s.btn, {backgroundColor: c.primary}]} onPress={handleStart} disabled={acting}>
+            {acting ? <ActivityIndicator color="#fff" /> : <Text style={s.btnText}>Iniciar recorrido</Text>}
           </TouchableOpacity>
         )}
         {isInTransit && (
-          <TouchableOpacity style={[styles.btn, styles.btnComplete]} onPress={handleComplete} disabled={acting}>
-            {acting ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Completar entrega</Text>}
+          <TouchableOpacity style={[s.btn, {backgroundColor: c.success}]} onPress={handleComplete} disabled={acting}>
+            {acting ? <ActivityIndicator color="#fff" /> : <Text style={s.btnText}>Completar entrega</Text>}
           </TouchableOpacity>
         )}
-        <TouchableOpacity style={[styles.btn, styles.btnShare]} onPress={handleShare}>
-          <Text style={styles.btnText}>Compartir ruta</Text>
+        <TouchableOpacity style={[s.btn, {backgroundColor: c.cardBorder}]} onPress={handleShare}>
+          <Text style={[s.btnText, {color: c.subtext}]}>Compartir ruta</Text>
         </TouchableOpacity>
       </View>
 
       {/* ── Modal mapa fullscreen ── */}
       <Modal visible={fullMap} animationType="slide" statusBarTranslucent>
-        <View style={styles.fullMapContainer}>
-          {mapRegion && (
+        <View style={s.fullMapContainer}>
+          {mapRegion && service && (
             <MapBoundary fallback={
-              <View style={styles.center}>
-                <Text>Error al cargar el mapa.</Text>
-                <TouchableOpacity style={styles.openMapsBtn} onPress={openInGoogleMaps}>
-                  <Text style={styles.openMapsBtnText}>Abrir en Google Maps</Text>
-                </TouchableOpacity>
+              <View style={[s.center, {backgroundColor: c.bg}]}>
+                <Text style={{color: c.text}}>Error al cargar el mapa.</Text>
               </View>
             }>
-              <MapContent height={SCREEN_H} />
+              <RouteMapReal
+                originLat={service.origin_lat}  originLng={service.origin_lng}
+                destLat={service.destination_lat} destLng={service.destination_lng}
+                mapRegion={mapRegion}
+                routeCoords={routeCoords}
+                locationTrail={locationTrail}
+                lastLocation={lastLocation}
+                snappedPoint={snappedPoint}
+                isInTransit={isInTransit}
+                isDeviated={isDeviated}
+                height={SCREEN_H}
+              />
             </MapBoundary>
           )}
-          {/* Overlay superior */}
-          <View style={styles.fullMapOverlay}>
-            <TouchableOpacity style={styles.fullMapClose} onPress={() => setFullMap(false)}>
-              <Text style={styles.fullMapCloseText}>✕ Cerrar</Text>
+          <View style={s.fullMapOverlay}>
+            <TouchableOpacity style={s.fullMapClose} onPress={() => setFullMap(false)}>
+              <Text style={s.fullMapCloseText}>✕ Cerrar</Text>
             </TouchableOpacity>
             {currentETA && (
-              <View style={styles.fullMapETA}>
-                <Text style={styles.fullMapETAText}>
-                  {currentETA.distKm} km · {currentETA.minutes} min estimados
-                </Text>
+              <View style={[s.fullMapETA, {backgroundColor: c.primary + 'EE'}]}>
+                <Text style={s.fullMapETAText}>{currentETA.distKm} km · {currentETA.minutes} min</Text>
               </View>
             )}
           </View>
-          {/* Botón navegar */}
-          <TouchableOpacity style={styles.fullMapNavBtn} onPress={openInGoogleMaps}>
-            <Text style={styles.fullMapNavText}>Iniciar navegación GPS</Text>
+          <TouchableOpacity style={[s.fullMapNavBtn, {backgroundColor: c.primary}]} onPress={handleOpenNavigation}>
+            <Text style={s.fullMapNavText}>Navegar con OsmAnd</Text>
           </TouchableOpacity>
         </View>
       </Modal>
 
       {/* ── Modal documento ── */}
       <Modal visible={docModal} animationType="slide" transparent>
-        <View style={styles.overlay}>
-          <View style={styles.sheet}>
-            <Text style={styles.sheetTitle}>Subir documento</Text>
+        <View style={[s.overlay, {backgroundColor: c.overlay}]}>
+          <View style={[s.sheet, {backgroundColor: c.sheet}]}>
+            <Text style={[s.sheetTitle, {color: c.text}]}>Subir documento</Text>
             <ScrollView showsVerticalScrollIndicator={false}>
-              <Text style={styles.label}>Tipo de documento</Text>
-              <View style={styles.typeGrid}>
+              <Text style={[s.label, {color: c.subtext}]}>Tipo de documento</Text>
+              <View style={s.typeGrid}>
                 {DOC_TYPES.map(t => (
                   <TouchableOpacity
                     key={t.value}
-                    style={[styles.typeChip, docType === t.value && styles.typeChipActive]}
+                    style={[s.typeChip, {borderColor: c.inputBorder, backgroundColor: docType === t.value ? c.primary : 'transparent'}]}
                     onPress={() => setDocType(t.value)}>
-                    <Text style={[styles.typeChipText, docType === t.value && {color: '#fff'}]}>{t.label}</Text>
+                    <Text style={[s.typeChipText, {color: docType === t.value ? '#fff' : c.subtext}]}>{t.label}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
-              <Text style={[styles.label, {marginTop: 14}]}>Nombre del destinatario *</Text>
-              <TextInput style={styles.input} placeholder="Nombre y apellido"
-                value={recipientName} onChangeText={setRecipientName} />
-              <Text style={[styles.label, {marginTop: 10}]}>Teléfono</Text>
-              <TextInput style={styles.input} placeholder="Número de teléfono"
-                value={recipientPhone} onChangeText={setRecipientPhone} keyboardType="phone-pad" />
-              <Text style={[styles.label, {marginTop: 10}]}>Dirección</Text>
-              <TextInput style={styles.input} placeholder="Dirección del destinatario"
-                value={recipientAddr} onChangeText={setRecipientAddr} />
-              <TouchableOpacity style={styles.photoBtn} onPress={pickDocPhoto}>
-                <Text style={styles.photoBtnText}>
-                  {docPhoto ? '📷 Imagen adjuntada — cambiar' : '📷 Tomar foto del documento *'}
+              <Text style={[s.label, {color: c.subtext, marginTop: 14}]}>Nombre del destinatario *</Text>
+              <TextInput
+                style={[s.input, {backgroundColor: c.inputBg, borderColor: c.inputBorder, color: c.text}]}
+                placeholder="Nombre y apellido" placeholderTextColor={c.hint}
+                value={recipientName} onChangeText={setRecipientName}
+              />
+              <Text style={[s.label, {color: c.subtext, marginTop: 10}]}>Teléfono</Text>
+              <TextInput
+                style={[s.input, {backgroundColor: c.inputBg, borderColor: c.inputBorder, color: c.text}]}
+                placeholder="Número de teléfono" placeholderTextColor={c.hint}
+                value={recipientPhone} onChangeText={setRecipientPhone} keyboardType="phone-pad"
+              />
+              <Text style={[s.label, {color: c.subtext, marginTop: 10}]}>Dirección</Text>
+              <TextInput
+                style={[s.input, {backgroundColor: c.inputBg, borderColor: c.inputBorder, color: c.text}]}
+                placeholder="Dirección del destinatario" placeholderTextColor={c.hint}
+                value={recipientAddr} onChangeText={setRecipientAddr}
+              />
+              <TouchableOpacity style={[s.photoBtn, {backgroundColor: c.primaryBg}]} onPress={pickDocPhoto}>
+                <Text style={[s.photoBtnText, {color: c.primary}]}>
+                  {docPhoto ? 'Imagen adjuntada — cambiar' : 'Tomar foto del documento *'}
                 </Text>
               </TouchableOpacity>
-              {docPhoto && <Image source={{uri: docPhoto.uri}} style={styles.preview} resizeMode="cover" />}
+              {docPhoto && <Image source={{uri: docPhoto.uri}} style={s.preview} resizeMode="cover" />}
             </ScrollView>
-            <View style={styles.sheetActions}>
-              <TouchableOpacity style={styles.cancelBtn} onPress={() => { setDocModal(false); resetDocForm(); }}>
-                <Text style={styles.cancelText}>Cancelar</Text>
+            <View style={s.sheetActions}>
+              <TouchableOpacity
+                style={[s.cancelBtn, {borderColor: c.inputBorder}]}
+                onPress={() => { setDocModal(false); resetDocForm(); }}>
+                <Text style={[s.cancelText, {color: c.subtext}]}>Cancelar</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.submitBtn, docSubmitting && {opacity: 0.6}]}
+              <TouchableOpacity
+                style={[s.submitBtn, {backgroundColor: c.primary, opacity: docSubmitting ? 0.6 : 1}]}
                 onPress={handleDocSubmit} disabled={docSubmitting}>
-                {docSubmitting ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>Subir</Text>}
+                {docSubmitting ? <ActivityIndicator color="#fff" /> : <Text style={s.submitText}>Subir</Text>}
               </TouchableOpacity>
             </View>
           </View>
@@ -597,150 +733,112 @@ export default function ServiceDetailScreen({route, navigation}) {
   );
 }
 
-function Row({label, value, valueColor}) {
-  return (
-    <View style={styles.row}>
-      <Text style={styles.rowLabel}>{label}</Text>
-      <Text style={[styles.rowValue, valueColor && {color: valueColor}]}>{value}</Text>
-    </View>
-  );
-}
-
-function InfoBlock({icon, label, children}) {
-  return (
-    <View style={styles.infoBlock}>
-      <View style={styles.infoBlockLeft}>
-        <Text style={styles.infoIcon}>{icon}</Text>
-      </View>
-      <View style={styles.infoBlockRight}>
-        <Text style={styles.infoLabel}>{label}</Text>
-        {children}
-      </View>
-    </View>
-  );
-}
-
 function _docLabel(type) {
   const map = {delivery_note: 'Guía de remisión', invoice: 'Factura', receipt: 'Recibo', other: 'Otro'};
   return map[type] || type;
 }
 
-const styles = StyleSheet.create({
-  container: {flex: 1, backgroundColor: '#F5F6FA'},
+// ── Estilos base (sin colores — los colores van inline con el tema) ────────────
+const s = StyleSheet.create({
+  container: {flex: 1},
   content:   {padding: 16, gap: 14, paddingBottom: 40},
   center:    {flex: 1, justifyContent: 'center', alignItems: 'center'},
 
-  // Header
-  header:        {backgroundColor: '#fff', borderRadius: 16, padding: 16,
-                  shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 8, elevation: 3},
-  headerTop:     {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start'},
-  headerNumber:  {fontSize: 18, fontWeight: '800', color: '#1a1a2e'},
-  headerDate:    {fontSize: 12, color: '#AAA', marginTop: 2},
+  card:       {borderRadius: 16, padding: 16, borderWidth: 1,
+               shadowColor: '#000', shadowOpacity: 0.06, shadowRadius: 8, elevation: 3},
+  headerTop:  {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12},
+  headerNumber:{fontSize: 18, fontWeight: '800'},
+  headerDate: {fontSize: 12, marginTop: 2},
 
-  statusChip:        {borderRadius: 20, paddingHorizontal: 12, paddingVertical: 5, backgroundColor: '#EEE'},
-  chipCompleted:     {backgroundColor: '#D1FAE5'},
-  chipInTransit:     {backgroundColor: '#EDE9FE'},
-  chipApproved:      {backgroundColor: '#FEF3C7'},
-  chipDeviated:      {backgroundColor: '#FEE2E2'},
-  statusChipText:    {fontSize: 12, fontWeight: '700', color: '#444'},
+  badge:     {borderRadius: 20, paddingHorizontal: 12, paddingVertical: 5, alignSelf: 'flex-start'},
+  badgeText: {fontSize: 12, fontWeight: '700'},
 
-  gpsBar:       {flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10,
-                 backgroundColor: '#F5F6FA', borderRadius: 8, padding: 8},
-  gpsDot:       {width: 7, height: 7, borderRadius: 4},
-  gpsBarText:   {fontSize: 11, color: '#666'},
+  gpsBar:      {flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 12,
+                borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7, borderWidth: 1},
+  gpsDot:      {width: 8, height: 8, borderRadius: 4},
+  gpsBarLabel: {fontSize: 12, fontWeight: '600', flex: 1},
+  gpsBarPings: {fontSize: 11},
 
-  // Info blocks
-  infoBlock:      {flexDirection: 'row', gap: 12, paddingVertical: 10,
-                   borderBottomWidth: 1, borderBottomColor: '#F5F5F5'},
+  etaCard:   {borderRadius: 14, padding: 16, borderWidth: 1,
+              flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around',
+              shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 6, elevation: 2},
+  etaItem:   {alignItems: 'center'},
+  etaLabel:  {fontSize: 11, marginBottom: 2},
+  etaValue:  {fontSize: 16, fontWeight: '700'},
+  etaDivider:{width: 1, height: 32},
+
+  sectionTitle:{fontSize: 14, fontWeight: '600', marginBottom: 12},
+  waiting:     {fontSize: 13, textAlign: 'center', paddingVertical: 8},
+
+  rowBetween: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12},
+  toggleBtn:  {borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6},
+  toggleBtnText:{fontSize: 12, fontWeight: '600'},
+
+  legend:      {flexDirection: 'row', gap: 16, marginBottom: 8},
+  legendItem:  {flexDirection: 'row', alignItems: 'center', gap: 6},
+  legendLine:  {width: 20, height: 3, borderRadius: 2},
+  legendText:  {fontSize: 11},
+
+  map:         {width: '100%', borderRadius: 10, marginTop: 4},
+  mapFallback: {height: 120, borderRadius: 10, justifyContent: 'center', alignItems: 'center', marginTop: 4},
+  mapFallbackText:{fontSize: 13, marginBottom: 8},
+  osmBtn:      {borderRadius: 10, paddingHorizontal: 16, paddingVertical: 10, marginTop: 8, alignItems: 'center'},
+  osmBtnText:  {fontWeight: '600', fontSize: 13},
+
+  row:       {flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 7, borderBottomWidth: 1},
+  rowLabel:  {fontSize: 13, flex: 1},
+  rowValue:  {fontSize: 13, fontWeight: '500', flex: 2, textAlign: 'right'},
+
+  infoBlock:      {flexDirection: 'row', gap: 12, paddingVertical: 10, borderBottomWidth: 1},
   infoBlockLeft:  {width: 28, alignItems: 'center', paddingTop: 1},
   infoBlockRight: {flex: 1},
   infoIcon:       {fontSize: 16},
-  infoLabel:      {fontSize: 11, color: '#AAA', fontWeight: '600', marginBottom: 2},
-  infoValue:      {fontSize: 13, color: '#333', fontWeight: '500'},
-  infoLink:       {fontSize: 11, color: '#534AB7', fontWeight: '600', marginTop: 2},
+  infoLabel:      {fontSize: 11, fontWeight: '600', marginBottom: 2},
+  infoValue:      {fontSize: 13, fontWeight: '500'},
+  infoLink:       {fontSize: 11, fontWeight: '600', marginTop: 2},
   idRow:          {paddingTop: 10, alignItems: 'flex-end'},
-  idText:         {fontSize: 10, color: '#CCC', fontFamily: 'monospace'},
+  idText:         {fontSize: 10, fontFamily: 'monospace'},
 
-  etaCard: {
-    backgroundColor: '#fff', borderRadius: 14, padding: 16,
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around',
-    shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 6, elevation: 2,
-  },
-  etaItem:    {alignItems: 'center'},
-  etaLabel:   {fontSize: 11, color: '#AAA', marginBottom: 2},
-  etaValue:   {fontSize: 16, fontWeight: '700', color: '#333'},
-  etaDivider: {width: 1, height: 32, backgroundColor: '#EEE'},
-
-  card: {
-    backgroundColor: '#fff', borderRadius: 14, padding: 16,
-    shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 6, elevation: 2,
-  },
-  cardAlert: {borderWidth: 1.5, borderColor: '#D85A30'},
-
-  sectionTitle: {fontSize: 14, fontWeight: '600', color: '#333', marginBottom: 12},
-  waiting:      {fontSize: 13, color: '#999', textAlign: 'center', paddingVertical: 8},
-
-  row:       {flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6,
-              borderBottomWidth: 1, borderBottomColor: '#F0F0F0'},
-  rowLabel:  {fontSize: 13, color: '#888', flex: 1},
-  rowValue:  {fontSize: 13, color: '#333', fontWeight: '500', flex: 2, textAlign: 'right'},
-  rowBetween:{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12},
-
-  toggleMapBtn:  {backgroundColor: '#F0F0F5', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6},
-  toggleMapText: {color: '#534AB7', fontSize: 12, fontWeight: '600'},
-
-  map: {width: '100%', borderRadius: 10, marginTop: 4},
-
-  mapFallback:     {height: 120, borderRadius: 10, backgroundColor: '#F0F0F5', justifyContent: 'center', alignItems: 'center', marginTop: 4},
-  mapFallbackText: {color: '#888', fontSize: 13, marginBottom: 8},
-  openMapsBtn:     {backgroundColor: '#EEEDFE', borderRadius: 10, paddingHorizontal: 16, paddingVertical: 10, marginTop: 8, alignItems: 'center'},
-  openMapsBtnText: {color: '#534AB7', fontWeight: '600', fontSize: 13},
-
-  scanBtn:     {backgroundColor: '#1D9E75', borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8},
+  scanBtn:     {borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8},
   scanBtnText: {color: '#fff', fontSize: 13, fontWeight: '600'},
 
   docItem: {flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-            paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#F0F0F0'},
-  docType: {fontSize: 13, color: '#444', fontWeight: '500'},
-  docSub:  {fontSize: 11, color: '#AAA', marginTop: 2},
-  docDate: {fontSize: 12, color: '#AAA'},
+            paddingVertical: 8, borderBottomWidth: 1},
+  docType: {fontSize: 13, fontWeight: '500'},
+  docSub:  {fontSize: 11, marginTop: 2},
+  docDate: {fontSize: 12},
 
-  actions:     {gap: 10, marginTop: 4},
-  btn:         {borderRadius: 12, padding: 16, alignItems: 'center'},
-  btnStart:    {backgroundColor: '#534AB7'},
-  btnComplete: {backgroundColor: '#1D9E75'},
-  btnShare:    {backgroundColor: '#F0F0F5'},
-  btnText:     {color: '#fff', fontSize: 16, fontWeight: '600'},
+  actions: {gap: 10, marginTop: 4},
+  btn:     {borderRadius: 12, padding: 16, alignItems: 'center'},
+  btnText: {color: '#fff', fontSize: 16, fontWeight: '600'},
 
-  // Fullscreen map
-  fullMapContainer: {flex: 1, backgroundColor: '#000'},
-  fullMapOverlay:   {position: 'absolute', top: 44, left: 0, right: 0, flexDirection: 'row',
-                     justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 16},
-  fullMapClose:     {backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8},
-  fullMapCloseText: {color: '#fff', fontWeight: '600'},
-  fullMapETA:       {backgroundColor: 'rgba(83,74,183,0.9)', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8},
-  fullMapETAText:   {color: '#fff', fontSize: 13, fontWeight: '600'},
-  fullMapNavBtn:    {position: 'absolute', bottom: 40, alignSelf: 'center', backgroundColor: '#534AB7',
-                     borderRadius: 28, paddingHorizontal: 32, paddingVertical: 16,
-                     shadowColor: '#534AB7', shadowOpacity: 0.4, shadowRadius: 10, elevation: 8},
-  fullMapNavText:   {color: '#fff', fontWeight: '700', fontSize: 16},
+  fullMapContainer:{flex: 1, backgroundColor: '#000'},
+  fullMapOverlay:  {position: 'absolute', top: 44, left: 0, right: 0,
+                    flexDirection: 'row', justifyContent: 'space-between',
+                    alignItems: 'center', paddingHorizontal: 16},
+  fullMapClose:    {backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8},
+  fullMapCloseText:{color: '#fff', fontWeight: '600'},
+  fullMapETA:      {borderRadius: 20, paddingHorizontal: 14, paddingVertical: 8},
+  fullMapETAText:  {color: '#fff', fontSize: 13, fontWeight: '600'},
+  fullMapNavBtn:   {position: 'absolute', bottom: 40, alignSelf: 'center',
+                    borderRadius: 28, paddingHorizontal: 32, paddingVertical: 16,
+                    shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 10, elevation: 8},
+  fullMapNavText:  {color: '#fff', fontWeight: '700', fontSize: 16},
 
-  // Modal documento
-  overlay: {flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end'},
-  sheet:   {backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, maxHeight: '90%'},
-  sheetTitle: {fontSize: 18, fontWeight: '700', color: '#222', marginBottom: 16},
-  label:   {fontSize: 13, fontWeight: '600', color: '#555', marginBottom: 6},
-  input:   {borderWidth: 1, borderColor: '#DDD', borderRadius: 10, padding: 12, fontSize: 14, color: '#333'},
-  typeGrid:       {flexDirection: 'row', flexWrap: 'wrap', gap: 8},
-  typeChip:       {borderRadius: 20, borderWidth: 1.5, borderColor: '#DDD', paddingHorizontal: 12, paddingVertical: 6},
-  typeChipActive: {backgroundColor: '#534AB7', borderColor: '#534AB7'},
-  typeChipText:   {fontSize: 12, color: '#555'},
-  photoBtn:       {marginTop: 12, backgroundColor: '#F0F0F5', borderRadius: 10, padding: 14, alignItems: 'center'},
-  photoBtnText:   {color: '#534AB7', fontWeight: '600', fontSize: 13},
-  preview:        {width: '100%', height: 160, borderRadius: 10, marginTop: 10},
-  sheetActions:   {flexDirection: 'row', gap: 10, marginTop: 16},
-  cancelBtn:      {flex: 1, borderRadius: 12, borderWidth: 1.5, borderColor: '#DDD', padding: 14, alignItems: 'center'},
-  cancelText:     {color: '#555', fontWeight: '600'},
-  submitBtn:      {flex: 2, borderRadius: 12, backgroundColor: '#534AB7', padding: 14, alignItems: 'center'},
-  submitText:     {color: '#fff', fontWeight: '700', fontSize: 15},
+  overlay:     {flex: 1, justifyContent: 'flex-end'},
+  sheet:       {borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, maxHeight: '90%'},
+  sheetTitle:  {fontSize: 18, fontWeight: '700', marginBottom: 16},
+  label:       {fontSize: 13, fontWeight: '600', marginBottom: 6},
+  input:       {borderWidth: 1, borderRadius: 10, padding: 12, fontSize: 14},
+  typeGrid:    {flexDirection: 'row', flexWrap: 'wrap', gap: 8},
+  typeChip:    {borderRadius: 20, borderWidth: 1.5, paddingHorizontal: 12, paddingVertical: 6},
+  typeChipText:{fontSize: 12},
+  photoBtn:    {marginTop: 12, borderRadius: 10, padding: 14, alignItems: 'center'},
+  photoBtnText:{fontWeight: '600', fontSize: 13},
+  preview:     {width: '100%', height: 160, borderRadius: 10, marginTop: 10},
+  sheetActions:{flexDirection: 'row', gap: 10, marginTop: 16},
+  cancelBtn:   {flex: 1, borderRadius: 12, borderWidth: 1.5, padding: 14, alignItems: 'center'},
+  cancelText:  {fontWeight: '600'},
+  submitBtn:   {flex: 2, borderRadius: 12, padding: 14, alignItems: 'center'},
+  submitText:  {color: '#fff', fontWeight: '700', fontSize: 15},
 });

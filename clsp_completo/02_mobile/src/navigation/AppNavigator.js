@@ -1,12 +1,14 @@
-import React from 'react';
+import React, {useEffect, useState} from 'react';
 import {NavigationContainer} from '@react-navigation/native';
 import {createNativeStackNavigator}  from '@react-navigation/native-stack';
 import {createBottomTabNavigator}    from '@react-navigation/bottom-tabs';
-import {View, Text, StyleSheet}      from 'react-native';
+import {View, Text, StyleSheet, Animated}      from 'react-native';
+import NetInfo from '@react-native-community/netinfo';
 import {useAuthStore, useTrackingStore} from '../store';
+import {useTheme} from '../context/ThemeContext';
 
-import LoginScreen        from '../screens/LoginScreen';
-import ServicesListScreen from '../screens/ServicesListScreen';
+import LoginScreen         from '../screens/LoginScreen';
+import ServicesListScreen  from '../screens/ServicesListScreen';
 import ServiceDetailScreen from '../screens/ServiceDetailScreen';
 import IncidentsScreen     from '../screens/IncidentsScreen';
 import ProfileScreen       from '../screens/ProfileScreen';
@@ -15,7 +17,6 @@ import SettingsScreen      from '../screens/SettingsScreen';
 const Stack = createNativeStackNavigator();
 const Tab   = createBottomTabNavigator();
 
-// Ícono simple con texto
 function TabIcon({label, active, alert}) {
   return (
     <View style={tabStyles.iconWrap}>
@@ -25,23 +26,22 @@ function TabIcon({label, active, alert}) {
   );
 }
 
-// Tabs del motorizado autenticado
 function MotoTabs() {
   const isTracking = useTrackingStore(s => s.isTracking);
-  const isDeviated = useTrackingStore(s => s.isDeviated);
+  const {colors}   = useTheme();
 
   return (
     <Tab.Navigator
       screenOptions={{
         headerShown: false,
         tabBarStyle: {
-          backgroundColor: '#fff',
-          borderTopColor: '#EEE',
+          backgroundColor: colors.tabBg,
+          borderTopColor:  colors.tabBorder,
           height: 60,
           paddingBottom: 8,
         },
-        tabBarActiveTintColor:   '#534AB7',
-        tabBarInactiveTintColor: '#AAA',
+        tabBarActiveTintColor:   colors.primary,
+        tabBarInactiveTintColor: colors.hint,
       }}>
 
       <Tab.Screen
@@ -49,9 +49,7 @@ function MotoTabs() {
         component={ServicesListScreen}
         options={{
           title: 'Servicios',
-          tabBarIcon: ({focused}) => (
-            <TabIcon label="📋" active={focused} alert={isTracking} />
-          ),
+          tabBarIcon: ({focused}) => <TabIcon label="📋" active={focused} alert={isTracking} />,
         }}
       />
       <Tab.Screen
@@ -59,9 +57,7 @@ function MotoTabs() {
         component={IncidentsScreen}
         options={{
           title: 'Incidencias',
-          tabBarIcon: ({focused}) => (
-            <TabIcon label="⚠" active={focused} />
-          ),
+          tabBarIcon: ({focused}) => <TabIcon label="⚠" active={focused} />,
         }}
       />
       <Tab.Screen
@@ -69,9 +65,7 @@ function MotoTabs() {
         component={ProfileScreen}
         options={{
           title: 'Perfil',
-          tabBarIcon: ({focused}) => (
-            <TabIcon label="👤" active={focused} />
-          ),
+          tabBarIcon: ({focused}) => <TabIcon label="👤" active={focused} />,
         }}
       />
       <Tab.Screen
@@ -79,65 +73,98 @@ function MotoTabs() {
         component={SettingsScreen}
         options={{
           title: 'Ajustes',
-          tabBarIcon: ({focused}) => (
-            <TabIcon label="⚙" active={focused} />
-          ),
+          tabBarIcon: ({focused}) => <TabIcon label="⚙" active={focused} />,
         }}
       />
     </Tab.Navigator>
   );
 }
 
-// Stack principal (incluye pantalla de detalle sobre los tabs)
 function AuthenticatedStack() {
+  const {colors} = useTheme();
   return (
     <Stack.Navigator
       screenOptions={{
-        headerStyle:     {backgroundColor: '#534AB7'},
-        headerTintColor: '#fff',
-        headerTitleStyle:{fontWeight: '600'},
+        headerStyle:      {backgroundColor: colors.headerBg},
+        headerTintColor:  colors.headerText,
+        headerTitleStyle: {fontWeight: '600'},
       }}>
-      <Stack.Screen
-        name="Tabs"
-        component={MotoTabs}
-        options={{headerShown: false}}
-      />
-      <Stack.Screen
-        name="ServiceDetail"
-        component={ServiceDetailScreen}
-        options={{title: 'Detalle del servicio'}}
-      />
+      <Stack.Screen name="Tabs" component={MotoTabs} options={{headerShown: false}} />
+      <Stack.Screen name="ServiceDetail" component={ServiceDetailScreen} options={{title: 'Detalle del servicio'}} />
     </Stack.Navigator>
   );
 }
 
-// Raíz: decide si mostrar Login o la app según la sesión
+function OfflineBanner({colors}) {
+  const [isOnline, setIsOnline] = useState(true);
+  const [wasOffline, setWasOffline] = useState(false);
+  const opacity = React.useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const unsub = NetInfo.addEventListener(state => {
+      const online = !!(state.isConnected && state.isInternetReachable);
+      setIsOnline(prev => {
+        if (!prev && online) setWasOffline(true);
+        return online;
+      });
+    });
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    Animated.timing(opacity, {
+      toValue: isOnline ? 0 : 1,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
+    if (wasOffline && isOnline) {
+      setTimeout(() => setWasOffline(false), 2000);
+    }
+  }, [isOnline]);
+
+  if (isOnline && !wasOffline) return null;
+
+  return (
+    <Animated.View style={[styles.banner, {opacity, backgroundColor: isOnline ? '#1D9E75' : '#D85A30'}]}>
+      <Text style={styles.bannerText}>
+        {isOnline ? '✓ Conexión restaurada — sincronizando...' : '⚠ Sin conexión — modo offline activo'}
+      </Text>
+    </Animated.View>
+  );
+}
+
 export default function AppNavigator() {
   const isLoggedIn = useAuthStore(s => s.isLoggedIn);
   const isLoading  = useAuthStore(s => s.isLoading);
+  const {colors}   = useTheme();
 
   if (isLoading) {
     return (
-      <View style={styles.splash}>
+      <View style={[styles.splash, {backgroundColor: colors.primary}]}>
         <Text style={styles.splashText}>CLSP</Text>
       </View>
     );
   }
 
   return (
-    <NavigationContainer>
-      <Stack.Navigator screenOptions={{headerShown: false}}>
-        {isLoggedIn
-          ? <Stack.Screen name="App"   component={AuthenticatedStack} />
-          : <Stack.Screen name="Login" component={LoginScreen} />}
-      </Stack.Navigator>
-    </NavigationContainer>
+    <View style={{flex: 1}}>
+      <OfflineBanner colors={colors} />
+      <NavigationContainer>
+        <Stack.Navigator screenOptions={{headerShown: false}}>
+          {isLoggedIn
+            ? <Stack.Screen name="App"   component={AuthenticatedStack} />
+            : <Stack.Screen name="Login" component={LoginScreen} />}
+        </Stack.Navigator>
+      </NavigationContainer>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  splash:     {flex: 1, backgroundColor: '#534AB7', justifyContent: 'center', alignItems: 'center'},
+  splash:     {flex: 1, justifyContent: 'center', alignItems: 'center'},
   splashText: {color: '#fff', fontSize: 42, fontWeight: '700', letterSpacing: 6},
+  banner:     {paddingVertical: 8, paddingHorizontal: 16, alignItems: 'center'},
+  bannerText: {color: '#fff', fontSize: 12, fontWeight: '600'},
 });
 
 const tabStyles = StyleSheet.create({

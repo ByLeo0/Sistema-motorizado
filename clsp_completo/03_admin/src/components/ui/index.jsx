@@ -27,7 +27,7 @@ export function StatCard({label, value, color = 'brand', onClick}) {
     teal:  'border-teal/30  bg-teal/5   text-teal',
     coral: 'border-coral/30 bg-coral/5  text-coral',
     amber: 'border-amber/30 bg-amber/5  text-amber',
-    gray:  'border-gray-200 bg-gray-50  text-gray-500',
+    gray:  'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 text-gray-500 dark:text-gray-400',
   };
   return (
     <button
@@ -48,8 +48,8 @@ export function PageHeader({title, subtitle, actions}) {
   return (
     <div className="flex items-start justify-between mb-6">
       <div>
-        <h1 className="text-xl font-bold text-gray-900">{title}</h1>
-        {subtitle && <p className="text-sm text-gray-400 mt-0.5">{subtitle}</p>}
+        <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">{title}</h1>
+        {subtitle && <p className="text-sm text-gray-400 dark:text-gray-500 mt-0.5">{subtitle}</p>}
       </div>
       {actions && <div className="flex gap-2">{actions}</div>}
     </div>
@@ -64,8 +64,8 @@ export function Button({children, variant = 'primary', size = 'md', disabled, on
     primary:  'bg-brand text-white hover:bg-brand-dark',
     success:  'bg-teal  text-white hover:bg-teal-dark',
     danger:   'bg-coral text-white hover:bg-coral-dark',
-    ghost:    'bg-transparent text-gray-600 hover:bg-gray-100',
-    outline:  'border border-gray-300 text-gray-700 hover:bg-gray-50',
+    ghost:    'bg-transparent text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800',
+    outline:  'border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800',
   };
   return (
     <button
@@ -78,18 +78,18 @@ export function Button({children, variant = 'primary', size = 'md', disabled, on
   );
 }
 
-// ── Modal simple ────────────────────────────────────────────────────────────
+// ── Modal ───────────────────────────────────────────────────────────────────
 export function Modal({open, onClose, title, children, footer}) {
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] flex flex-col">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-          <h2 className="text-base font-bold text-gray-900">{title}</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+      <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 dark:border-gray-700">
+          <h2 className="text-base font-bold text-gray-900 dark:text-gray-100">{title}</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-xl leading-none">×</button>
         </div>
         <div className="flex-1 overflow-auto px-6 py-4">{children}</div>
-        {footer && <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-3">{footer}</div>}
+        {footer && <div className="px-6 py-4 border-t border-gray-100 dark:border-gray-700 flex justify-end gap-3">{footer}</div>}
       </div>
     </div>
   );

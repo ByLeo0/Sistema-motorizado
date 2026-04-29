@@ -2,6 +2,42 @@ import uuid
 from django.contrib.gis.db import models as gis_models
 from django.db import models
 from django.conf import settings
+from django.core.validators import MinValueValidator, MaxValueValidator
+
+
+class Vehicle(models.Model):
+    class Status(models.TextChoices):
+        ACTIVE      = 'active',      'Activo'
+        MAINTENANCE = 'maintenance', 'En mantenimiento'
+        INACTIVE    = 'inactive',    'Inactivo'
+
+    id                    = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    plate                 = models.CharField(max_length=20, unique=True, help_text='Placa del vehículo')
+    brand                 = models.CharField(max_length=50)
+    model                 = models.CharField(max_length=50)
+    year                  = models.PositiveSmallIntegerField()
+    status                = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE, db_index=True)
+    assigned_motorizado   = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='assigned_vehicle',
+        limit_choices_to={'role': 'motorizado'},
+    )
+    mileage               = models.PositiveIntegerField(default=0, help_text='Kilómetros recorridos')
+    fuel_consumption_rate = models.FloatField(default=50.0, help_text='Rendimiento en km/l')
+    last_maintenance      = models.DateField(null=True, blank=True)
+    next_maintenance      = models.DateField(null=True, blank=True)
+    notes                 = models.TextField(blank=True, help_text='Problemas o notas adicionales')
+    created_at            = models.DateTimeField(auto_now_add=True)
+    updated_at            = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table            = 'vehicles'
+        ordering            = ['plate']
+        verbose_name        = 'Vehículo'
+        verbose_name_plural = 'Vehículos'
+
+    def __str__(self):
+        return f'{self.brand} {self.model} ({self.plate})'
 
 
 class Route(models.Model):
@@ -12,6 +48,10 @@ class Route(models.Model):
     )
     geometry         = gis_models.LineStringField(srid=4326,
                         help_text='Trayectoria fija en formato LineString (GeoJSON)')
+    encoded_polyline = models.TextField(blank=True,
+                        help_text='Google Encoded Polyline (precision 5) generada por OSRM')
+    polyline_steps   = models.JSONField(default=list, blank=True,
+                        help_text='Pasos de navegación generados por OSRM/GraphHopper')
     tolerance_meters = models.FloatField(default=100.0,
                         help_text='Metros maximos que puede desviarse el motorizado')
     created_at       = models.DateTimeField(auto_now_add=True)
@@ -53,6 +93,15 @@ class Service(models.Model):
     origin              = gis_models.PointField(srid=4326, help_text='Punto de recogida')
     destination         = gis_models.PointField(srid=4326, help_text='Punto de entrega')
     notes               = models.TextField(blank=True, help_text='Instrucciones adicionales')
+    customer_name       = models.CharField(max_length=200, blank=True, help_text='Nombre del destinatario')
+    customer_phone      = models.CharField(max_length=20,  blank=True, help_text='Teléfono del destinatario')
+    customer_address    = models.CharField(max_length=255, blank=True, help_text='Dirección del destinatario')
+    stops               = models.JSONField(null=True, blank=True, help_text='Paradas intermedias [{lat, lng, description}]')
+    rating              = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        validators=[MinValueValidator(0), MaxValueValidator(5)],
+        help_text='Puntuación del servicio (0-5)',
+    )
     approved_by         = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
         null=True, blank=True, related_name='services_approved'

@@ -30,6 +30,9 @@ export default function UsersPage() {
   const [editUser,   setEditUser]   = useState(null);
   const [editForm,   setEditForm]   = useState({});
   const [editSaving, setEditSaving] = useState(false);
+  const [pwdForm,    setPwdForm]    = useState({new_password: '', confirm: ''});
+  const [pwdSaving,  setPwdSaving]  = useState(false);
+  const [pwdOpen,    setPwdOpen]    = useState(false);
 
   const [toggling,   setToggling]   = useState(null);
   const [collapsed,  setCollapsed]  = useState({});
@@ -73,6 +76,8 @@ export default function UsersPage() {
   const openEdit = u => {
     setEditUser(u);
     setEditForm({first_name: u.first_name || '', last_name: u.last_name || '', phone: u.phone || '', role: u.role || 'cliente'});
+    setPwdForm({new_password: '', confirm: ''});
+    setPwdOpen(false);
   };
 
   const handleEdit = async e => {
@@ -88,6 +93,30 @@ export default function UsersPage() {
       toast.error(errors ? Object.values(errors).flat().join(' ') : 'Error al actualizar.');
     } finally {
       setEditSaving(false);
+    }
+  };
+
+  // ── Cambiar contraseña ─────────────────────────────────────────────────
+  const handleSetPassword = async e => {
+    e.preventDefault();
+    if (pwdForm.new_password !== pwdForm.confirm) {
+      toast.error('Las contraseñas no coinciden.');
+      return;
+    }
+    if (pwdForm.new_password.length < 8) {
+      toast.error('La contraseña debe tener al menos 8 caracteres.');
+      return;
+    }
+    setPwdSaving(true);
+    try {
+      await usersAPI.setPassword(editUser.id, pwdForm.new_password);
+      toast.success('Contraseña actualizada correctamente.');
+      setPwdForm({new_password: '', confirm: ''});
+      setPwdOpen(false);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Error al cambiar la contraseña.');
+    } finally {
+      setPwdSaving(false);
     }
   };
 
@@ -133,20 +162,20 @@ export default function UsersPage() {
           const open  = !collapsed[role];
 
           return (
-            <section key={role} className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+            <section key={role} className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-sm overflow-hidden">
 
               {/* Cabecera de sección */}
               <button
                 onClick={() => toggleCollapse(role)}
-                className="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 transition">
+                className="w-full flex items-center justify-between px-5 py-4 hover:bg-gray-50 dark:hover:bg-gray-700 transition">
                 <div className="flex items-center gap-3">
                   <span className={clsx('w-2.5 h-2.5 rounded-full shrink-0', cfg.dot)} />
-                  <span className="font-bold text-gray-800">{cfg.label}</span>
+                  <span className="font-bold text-gray-800 dark:text-gray-100">{cfg.label}</span>
                   <span className={clsx('px-2.5 py-0.5 rounded-full text-xs font-semibold', cfg.cls)}>
                     {group.length}
                   </span>
                 </div>
-                <span className={clsx('text-gray-400 text-sm transition-transform', open ? 'rotate-180' : '')}>
+                <span className={clsx('text-gray-400 dark:text-gray-500 text-sm transition-transform', open ? 'rotate-180' : '')}>
                   ▾
                 </span>
               </button>
@@ -154,14 +183,14 @@ export default function UsersPage() {
               {/* Tabla de usuarios */}
               {open && (
                 group.length === 0 ? (
-                  <div className="px-5 py-8 text-center text-gray-400 text-sm border-t border-gray-50">
+                  <div className="px-5 py-8 text-center text-gray-400 dark:text-gray-500 text-sm border-t border-gray-100 dark:border-gray-700">
                     No hay {cfg.label.toLowerCase()} registrados.
                   </div>
                 ) : (
-                  <div className="border-t border-gray-50 overflow-x-auto">
+                  <div className="border-t border-gray-100 dark:border-gray-700 overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
-                        <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                        <tr className="bg-gray-50 dark:bg-gray-900 text-left text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
                           <th className="px-5 py-2.5">Nombre</th>
                           <th className="px-5 py-2.5">Email</th>
                           <th className="px-5 py-2.5">Teléfono</th>
@@ -170,9 +199,9 @@ export default function UsersPage() {
                           <th className="px-5 py-2.5"></th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-gray-50">
+                      <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
                         {group.map(u => (
-                          <tr key={u.id} className="hover:bg-gray-50 transition">
+                          <tr key={u.id} className="hover:bg-gray-50 dark:hover:bg-gray-700 transition">
                             <td className="px-5 py-3">
                               <div className="flex items-center gap-2.5">
                                 <div className={clsx(
@@ -181,18 +210,18 @@ export default function UsersPage() {
                                 )}>
                                   {u.first_name?.[0]}{u.last_name?.[0]}
                                 </div>
-                                <span className="font-medium text-gray-800">{u.full_name}</span>
+                                <span className="font-medium text-gray-800 dark:text-gray-100">{u.full_name}</span>
                               </div>
                             </td>
-                            <td className="px-5 py-3 text-gray-500">{u.email}</td>
-                            <td className="px-5 py-3 text-gray-500">{u.phone || '—'}</td>
-                            <td className="px-5 py-3 text-gray-400 text-xs">
+                            <td className="px-5 py-3 text-gray-500 dark:text-gray-400">{u.email}</td>
+                            <td className="px-5 py-3 text-gray-500 dark:text-gray-400">{u.phone || '—'}</td>
+                            <td className="px-5 py-3 text-gray-400 dark:text-gray-500 text-xs">
                               {format(new Date(u.date_joined), "d MMM yyyy", {locale: es})}
                             </td>
                             <td className="px-5 py-3">
                               <span className={clsx(
                                 'px-2 py-0.5 rounded-full text-xs font-semibold',
-                                u.is_active ? 'bg-teal/10 text-teal' : 'bg-gray-100 text-gray-400',
+                                u.is_active ? 'bg-teal/10 text-teal' : 'bg-gray-100 dark:bg-gray-700 text-gray-400 dark:text-gray-500',
                               )}>
                                 {u.is_active ? 'Activo' : 'Inactivo'}
                               </span>
@@ -244,11 +273,11 @@ export default function UsersPage() {
           <Field label="Correo electrónico" type="email" value={form.email} onChange={v => setField('email', v)} />
           <Field label="Teléfono" value={form.phone} onChange={v => setField('phone', v)} placeholder="Opcional" />
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">Cargo / Rol</label>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">Cargo / Rol</label>
             <select
               value={form.role}
               onChange={e => setField('role', e.target.value)}
-              className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30">
+              className="w-full border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30">
               <option value="motorizado">Motorizado</option>
               <option value="cliente">Cliente</option>
               <option value="admin">Administrador</option>
@@ -289,6 +318,41 @@ export default function UsersPage() {
               <option value="admin">Administrador</option>
             </select>
           </div>
+
+          {/* Cambiar contraseña */}
+          <div className="border-t border-gray-100 pt-3">
+            <button
+              type="button"
+              onClick={() => setPwdOpen(v => !v)}
+              className="text-sm text-brand hover:underline font-medium">
+              {pwdOpen ? '▾ Ocultar cambio de contraseña' : '▸ Cambiar contraseña'}
+            </button>
+            {pwdOpen && (
+              <div className="flex flex-col gap-3 mt-3">
+                <Field
+                  label="Nueva contraseña"
+                  type="password"
+                  value={pwdForm.new_password}
+                  onChange={v => setPwdForm(p => ({...p, new_password: v}))}
+                  placeholder="Mínimo 8 caracteres"
+                />
+                <Field
+                  label="Confirmar contraseña"
+                  type="password"
+                  value={pwdForm.confirm}
+                  onChange={v => setPwdForm(p => ({...p, confirm: v}))}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={pwdSaving}
+                  onClick={handleSetPassword}>
+                  {pwdSaving ? 'Guardando...' : 'Guardar nueva contraseña'}
+                </Button>
+              </div>
+            )}
+          </div>
         </form>
       </Modal>
     </div>
@@ -298,13 +362,13 @@ export default function UsersPage() {
 function Field({label, type = 'text', value, onChange, placeholder}) {
   return (
     <div>
-      <label className="block text-sm font-medium text-gray-700 mb-1.5">{label}</label>
+      <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1.5">{label}</label>
       <input
         type={type}
         value={value}
         onChange={e => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition"
+        className="w-full border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand transition"
       />
     </div>
   );

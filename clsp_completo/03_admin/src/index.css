@@ -26,6 +26,10 @@
     border-color: #2A2D3A !important;
   }
 
+  /* Bordes adaptables */
+  html.dark .border-gray-100 { border-color: #2A2D3A !important; }
+  html.dark .border-gray-200 { border-color: #31354A !important; }
+
   /* Fondo gris claro → gris oscuro */
   html.dark .bg-\[\#F5F6FA\],
   html.dark .bg-gray-50 {
@@ -34,6 +38,7 @@
   html.dark .bg-gray-100 { background-color: #1E2130 !important; }
 
   /* Texto gris → claro */
+  html.dark .text-gray-900 { color: #F0F2F9 !important; }
   html.dark .text-gray-800 { color: #E4E6F0 !important; }
   html.dark .text-gray-700 { color: #C8CCE0 !important; }
   html.dark .text-gray-600 { color: #9CA3B8 !important; }
@@ -41,20 +46,16 @@
   html.dark .text-gray-400 { color: #6B7494 !important; }
   html.dark .text-gray-300 { color: #4C5470 !important; }
 
-  /* Bordes */
-  html.dark .border-gray-100 { border-color: #2A2D3A !important; }
-  html.dark .border-gray-200 { border-color: #31354A !important; }
-
   /* Divisores en tablas */
   html.dark .divide-gray-50 > * + * { border-color: #2A2D3A !important; }
 
   /* Hover */
   html.dark .hover\:bg-gray-50:hover { background-color: #1E2130 !important; }
+  html.dark .hover\:text-gray-700:hover { color: #E4E6F0 !important; }
 
   /* Sidebar */
   html.dark aside {
     background-color: #13151F !important;
-    border-color: #2A2D3A !important;
   }
 
   /* Inputs y selects */
@@ -66,11 +67,36 @@
     color: #E4E6F0 !important;
   }
   html.dark input::placeholder { color: #6B7494 !important; }
+  html.dark input:focus { border-color: #534AB7 !important; }
+
+  /* Colores de marca en dark */
+  html.dark .text-brand { color: #A78BFA !important; }
+  html.dark .bg-brand\/5 { background-color: rgba(167, 139, 250, 0.05) !important; }
+  html.dark .bg-brand\/10 { background-color: rgba(167, 139, 250, 0.1) !important; }
+
+  /* Colores de estado */
+  html.dark .text-teal { color: #5EEAD4 !important; }
+  html.dark .bg-teal\/5 { background-color: rgba(94, 234, 212, 0.05) !important; }
+  html.dark .bg-teal\/10 { background-color: rgba(94, 234, 212, 0.1) !important; }
+
+  html.dark .text-coral { color: #FB7185 !important; }
+  html.dark .bg-coral\/5 { background-color: rgba(251, 113, 133, 0.05) !important; }
+  html.dark .bg-coral\/10 { background-color: rgba(251, 113, 133, 0.1) !important; }
+
+  html.dark .text-amber { color: #FBBF24 !important; }
+  html.dark .bg-amber\/5 { background-color: rgba(251, 191, 36, 0.05) !important; }
+  html.dark .bg-amber\/10 { background-color: rgba(251, 191, 36, 0.1) !important; }
 
   /* Scrollbar modo oscuro */
   html.dark ::-webkit-scrollbar-track { background: #1A1D27; }
   html.dark ::-webkit-scrollbar-thumb { background: #31354A; }
   html.dark ::-webkit-scrollbar-thumb:hover { background: #4C5470; }
+
+  /* Badge/chips */
+  html.dark .bg-emerald-50 { background-color: rgba(5, 150, 105, 0.1) !important; }
+  html.dark .bg-blue-50 { background-color: rgba(3, 102, 214, 0.1) !important; }
+  html.dark .bg-orange-50 { background-color: rgba(249, 115, 22, 0.1) !important; }
+  html.dark .bg-red-50 { background-color: rgba(239, 68, 68, 0.1) !important; }
 }
 
 /* Mapbox overrides */

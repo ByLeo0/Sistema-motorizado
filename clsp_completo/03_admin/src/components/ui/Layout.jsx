@@ -8,7 +8,9 @@ const NAV = [
   {to: '/services',   label: 'Servicios',   icon: '◈'},
   {to: '/live-map',   label: 'Mapa en vivo', icon: '◎'},
   {to: '/incidents',  label: 'Incidencias', icon: '⚑'},
+  {to: '/vehicles',   label: 'Vehículos',   icon: '🏍'},
   {to: '/users',      label: 'Usuarios',    icon: '◉'},
+  {to: '/audit-log',  label: 'Auditoría',   icon: '📋'},
 ];
 
 export default function Layout() {
@@ -25,15 +27,15 @@ export default function Layout() {
   };
 
   return (
-    <div className="flex h-screen overflow-hidden bg-[#F5F6FA]">
+    <div className="flex h-screen overflow-hidden bg-[#F5F6FA] dark:bg-gray-950">
 
       {/* Sidebar */}
       <aside className={clsx(
-        'flex flex-col bg-white border-r border-gray-100 transition-all duration-200 shadow-sm',
+        'flex flex-col bg-white dark:bg-gray-900 border-r border-gray-100 dark:border-gray-800 transition-all duration-200 shadow-sm shrink-0',
         collapsed ? 'w-16' : 'w-56',
       )}>
         {/* Logo */}
-        <div className="flex items-center gap-3 px-4 py-5 border-b border-gray-100">
+        <div className="flex items-center gap-3 px-4 py-5 border-b border-gray-100 dark:border-gray-800">
           <div className="w-8 h-8 rounded-lg bg-brand flex items-center justify-center shrink-0">
             <span className="text-white font-bold text-sm">C</span>
           </div>
@@ -50,7 +52,7 @@ export default function Layout() {
                 'flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors',
                 isActive
                   ? 'bg-brand/10 text-brand'
-                  : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800',
+                  : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-gray-800 dark:hover:text-gray-100',
               )}>
               <span className="text-base w-5 text-center shrink-0">{icon}</span>
               {!collapsed && <span>{label}</span>}
@@ -59,11 +61,11 @@ export default function Layout() {
         </nav>
 
         {/* User + theme + logout */}
-        <div className="border-t border-gray-100 p-3 flex flex-col gap-1">
+        <div className="border-t border-gray-100 dark:border-gray-800 p-3 flex flex-col gap-1">
           {!collapsed && (
             <div className="mb-1 px-2">
-              <p className="text-xs font-semibold text-gray-800 truncate">{user?.full_name}</p>
-              <p className="text-xs text-gray-400 truncate">{user?.email}</p>
+              <p className="text-xs font-semibold text-gray-800 dark:text-gray-200 truncate">{user?.full_name}</p>
+              <p className="text-xs text-gray-400 dark:text-gray-500 truncate">{user?.email}</p>
             </div>
           )}
 
@@ -71,7 +73,7 @@ export default function Layout() {
           <button
             onClick={toggle}
             title={theme === 'dark' ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'}
-            className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-gray-500 hover:bg-gray-50 transition-colors">
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
             <span className="text-base w-5 text-center shrink-0">
               {theme === 'dark' ? '☀' : '🌙'}
             </span>
@@ -91,7 +93,7 @@ export default function Layout() {
         {/* Colapsar */}
         <button
           onClick={() => setCollapsed(c => !c)}
-          className="absolute -right-3 top-20 w-6 h-6 bg-white border border-gray-200 rounded-full text-gray-400 hover:text-brand shadow-sm text-xs flex items-center justify-center">
+          className="absolute -right-3 top-20 w-6 h-6 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-full text-gray-400 hover:text-brand shadow-sm text-xs flex items-center justify-center">
           {collapsed ? '›' : '‹'}
         </button>
       </aside>

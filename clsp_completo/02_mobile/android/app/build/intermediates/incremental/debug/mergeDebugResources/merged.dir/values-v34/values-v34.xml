@@ -1,5 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <integer name="foregroundServiceTypeHealth">256</integer>
-    <integer name="foregroundServiceTypeShortService">2048</integer>
-</resources>

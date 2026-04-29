@@ -58,11 +58,12 @@ export const authAPI = {
 
 // ── Usuarios ──────────────────────────────────────────────────────────────
 export const usersAPI = {
-  list:         params    => api.get('/users/',              {params}),
-  motorizados:  ()        => api.get('/users/motorizados/'),
-  create:       data      => api.post('/users/', data),
+  list:         params     => api.get('/users/',              {params}),
+  motorizados:  ()         => api.get('/users/motorizados/'),
+  create:       data       => api.post('/users/', data),
   update:       (id, data) => api.patch(`/users/${id}/`, data),
-  toggleActive: id        => api.patch(`/users/${id}/toggle_active/`),
+  toggleActive: id         => api.patch(`/users/${id}/toggle_active/`),
+  setPassword:  (id, pwd)  => api.post(`/users/${id}/set_password/`, {new_password: pwd}),
 };
 
 // ── Servicios ─────────────────────────────────────────────────────────────
@@ -74,6 +75,7 @@ export const servicesAPI = {
   approve:  (id, body)   => api.post(`/services/${id}/approve/`, body),
   reject:   (id, body)   => api.post(`/services/${id}/reject/`,  body),
   cancel:    id          => api.post(`/services/${id}/cancel/`),
+  rate:     (id, body)   => api.post(`/services/${id}/rate/`,    body),
   tracking:  id          => api.get(`/services/${id}/tracking_history/`),
 };
 
@@ -85,8 +87,23 @@ export const trackingAPI = {
 
 // ── Incidencias ───────────────────────────────────────────────────────────
 export const incidentsAPI = {
-  list:    params => api.get('/incidents/', {params}),
-  resolve: id     => api.patch(`/incidents/${id}/resolve/`),
+  list:          params        => api.get('/incidents/', {params}),
+  resolve:       (id, data)   => api.patch(`/incidents/${id}/resolve/`, data),
+  reassign:      (id, data)   => api.patch(`/incidents/${id}/reassign/`, data),
+  cancelService: (id, data)   => api.patch(`/incidents/${id}/cancel_service/`, data),
+};
+
+// ── Vehículos ─────────────────────────────────────────────────────────────
+export const vehiclesAPI = {
+  list:   params      => api.get('/vehicles/',        {params}),
+  create: data        => api.post('/vehicles/', data),
+  update: (id, data)  => api.patch(`/vehicles/${id}/`, data),
+  delete: id          => api.delete(`/vehicles/${id}/`),
+};
+
+// ── Auditoría ─────────────────────────────────────────────────────────────
+export const auditAPI = {
+  list: params => api.get('/audit/', {params}),
 };
 
 export default api;

@@ -1,4 +1,4 @@
-#Mon Apr 20 02:13:46 PET 2026
+#Tue Apr 28 21:59:33 PET 2026
 base.0=C\:\\Users\\User\\Downloads\\clsp_sistema_completo\\clsp_completo\\02_mobile\\android\\app\\build\\intermediates\\dex\\debug\\mergeExtDexDebug\\classes.dex
 base.1=C\:\\Users\\User\\Downloads\\clsp_sistema_completo\\clsp_completo\\02_mobile\\android\\app\\build\\intermediates\\dex\\debug\\mergeLibDexDebug\\0\\classes.dex
 base.2=C\:\\Users\\User\\Downloads\\clsp_sistema_completo\\clsp_completo\\02_mobile\\android\\app\\build\\intermediates\\dex\\debug\\mergeProjectDexDebug\\0\\classes.dex

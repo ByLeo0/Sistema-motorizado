@@ -9,6 +9,8 @@ import ServiceDetailPage  from './pages/ServiceDetailPage';
 import ApproveServicePage from './pages/ApproveServicePage';
 import LiveMapPage        from './pages/LiveMapPage';
 import IncidentsPage from './pages/IncidentsPage';
+import VehiclesPage  from './pages/VehiclesPage';
+import AuditLogPage  from './pages/AuditLogPage';
 import UsersPage     from './pages/UsersPage';
 
 function RequireAuth({children}) {
@@ -33,7 +35,9 @@ export default function App() {
           <Route path="services/:id/approve" element={<ApproveServicePage />} />
           <Route path="live-map"    element={<LiveMapPage />} />
           <Route path="incidents"   element={<IncidentsPage />} />
+          <Route path="vehicles"    element={<VehiclesPage />} />
           <Route path="users"       element={<UsersPage />} />
+          <Route path="audit-log"   element={<AuditLogPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>

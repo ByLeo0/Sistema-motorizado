@@ -62,6 +62,16 @@ class UserViewSet(viewsets.ModelViewSet):
             return [IsAuthenticated()]
         return [IsAdmin()]
 
+    # GET /api/users/my_vehicle/ — vehículo asignado al motorizado autenticado
+    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
+    def my_vehicle(self, request):
+        from services.models import Vehicle
+        from services.serializers import VehicleSerializer
+        vehicle = Vehicle.objects.filter(assigned_motorizado=request.user).first()
+        if not vehicle:
+            return Response(None)
+        return Response(VehicleSerializer(vehicle).data)
+
     # GET/PATCH /api/users/me/
     @action(detail=False, methods=['get', 'patch'], permission_classes=[IsAuthenticated])
     def me(self, request):
@@ -88,6 +98,18 @@ class UserViewSet(viewsets.ModelViewSet):
         user.save(update_fields=['is_active'])
         estado = 'activado' if user.is_active else 'desactivado'
         return Response({'detail': f'Usuario {estado}.', 'is_active': user.is_active})
+
+    # POST /api/users/{id}/set_password/
+    @action(detail=True, methods=['post'], permission_classes=[IsAdmin])
+    def set_password(self, request, pk=None):
+        """El admin cambia la contraseña de cualquier usuario."""
+        user = self.get_object()
+        new_password = request.data.get('new_password', '').strip()
+        if len(new_password) < 8:
+            return Response({'error': 'La contraseña debe tener al menos 8 caracteres.'}, status=400)
+        user.set_password(new_password)
+        user.save(update_fields=['password'])
+        return Response({'detail': 'Contraseña actualizada correctamente.'})
 
     # PATCH /api/users/update_fcm_token/
     @action(detail=False, methods=['patch'], permission_classes=[IsAuthenticated])

@@ -91,7 +91,7 @@ class TrackingConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_send(
             self.group_name,
             {
-                'type':             'tracking.update',  # → llama al metodo tracking_update
+                'type':             'tracking.update',
                 'lat':               lat,
                 'lng':               lng,
                 'speed_kmh':         float(data.get('speed', 0)),
@@ -99,21 +99,31 @@ class TrackingConsumer(AsyncWebsocketConsumer):
                 'deviation_meters':  result['deviation_meters'],
                 'is_deviated':       result['is_deviated'],
                 'tolerance_meters':  result['tolerance_meters'],
+                'route_status':      result['route_status'],
+                'snapped_lat':       result['snapped_lat'],
+                'snapped_lng':       result['snapped_lng'],
+                'reentry_lat':       result['reentry_lat'],
+                'reentry_lng':       result['reentry_lng'],
                 'motorizado_name':   self.user.full_name,
                 'timestamp':         result['timestamp'],
             }
         )
 
-        # Confirmar al motorizado que el ping fue procesado
+        # Confirmar al motorizado con snap info
         await self.send(text_data=json.dumps({
             'type':             'ping_ack',
             'deviation_meters': result['deviation_meters'],
             'is_deviated':      result['is_deviated'],
+            'route_status':     result['route_status'],
+            'snapped_lat':      result['snapped_lat'],
+            'snapped_lng':      result['snapped_lng'],
+            'reentry_lat':      result['reentry_lat'],
+            'reentry_lng':      result['reentry_lng'],
         }))
 
     # ── Handler: reenviar update a todos los miembros del grupo ──────────
     async def tracking_update(self, event):
-        """Channels llama este metodo cuando alguien hace group_send con type='tracking.update'"""
+        """Channels llama este método cuando alguien hace group_send con type='tracking.update'"""
         await self.send(text_data=json.dumps({
             'type':             'tracking_update',
             'lat':               event['lat'],
@@ -123,6 +133,11 @@ class TrackingConsumer(AsyncWebsocketConsumer):
             'deviation_meters':  event['deviation_meters'],
             'is_deviated':       event['is_deviated'],
             'tolerance_meters':  event['tolerance_meters'],
+            'route_status':      event.get('route_status', 'EN_RUTA'),
+            'snapped_lat':       event.get('snapped_lat'),
+            'snapped_lng':       event.get('snapped_lng'),
+            'reentry_lat':       event.get('reentry_lat'),
+            'reentry_lng':       event.get('reentry_lng'),
             'motorizado_name':   event['motorizado_name'],
             'timestamp':         event['timestamp'],
         }))
@@ -151,4 +166,7 @@ class TrackingConsumer(AsyncWebsocketConsumer):
             heading=heading,
             accuracy=accuracy,
         )
-        return {**deviation_info, 'timestamp': log.timestamp.isoformat()}
+        return {
+            **deviation_info,
+            'timestamp': log.timestamp.isoformat(),
+        }

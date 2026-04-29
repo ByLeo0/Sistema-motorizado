@@ -60,11 +60,17 @@ class Incident(models.Model):
     tracking_log = models.ForeignKey(
         TrackingLog, on_delete=models.SET_NULL, null=True, blank=True
     )
-    type         = models.CharField(max_length=30, choices=Type.choices, db_index=True)
-    description  = models.TextField(blank=True)
-    photo        = models.ImageField(upload_to='incidents/%Y/%m/', blank=True, null=True)
-    resolved     = models.BooleanField(default=False)
-    created_at   = models.DateTimeField(auto_now_add=True)
+    type          = models.CharField(max_length=30, choices=Type.choices, db_index=True)
+    description   = models.TextField(blank=True)
+    photo         = models.ImageField(upload_to='incidents/%Y/%m/', blank=True, null=True)
+    resolved      = models.BooleanField(default=False)
+    admin_comment = models.TextField(blank=True, help_text='Respuesta del administrador al motorizado')
+    resolved_by   = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='incidents_resolved'
+    )
+    resolved_at   = models.DateTimeField(null=True, blank=True)
+    created_at    = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table     = 'incidents'

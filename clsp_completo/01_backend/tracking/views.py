@@ -10,7 +10,7 @@ from datetime import timedelta
 
 from .models import TrackingLog, Incident
 from .serializers import TrackingLogSerializer, TrackingPingSerializer, IncidentSerializer
-from .geofence import save_tracking_ping
+from .geofence import save_tracking_ping, snap_to_route
 from services.models import Service
 from accounts.permissions import IsAdmin, IsMotorizado
 
@@ -57,12 +57,77 @@ class TrackingPingView(APIView):
         )
 
         return Response({
-            'log_id':          str(log.id),
+            'log_id':           str(log.id),
             'deviation_meters': deviation_info['deviation_meters'],
             'is_deviated':      deviation_info['is_deviated'],
             'tolerance_meters': deviation_info['tolerance_meters'],
+            'route_status':     deviation_info['route_status'],
+            'snapped_lat':      deviation_info['snapped_lat'],
+            'snapped_lng':      deviation_info['snapped_lng'],
+            'reentry_lat':      deviation_info['reentry_lat'],
+            'reentry_lng':      deviation_info['reentry_lng'],
             'timestamp':        log.timestamp.isoformat(),
         }, status=201)
+
+
+class SnapView(APIView):
+    """
+    POST /api/tracking/snap/
+    Snap de un punto GPS al eje de la ruta, sin escribir en la base de datos.
+
+    Body: { "service_id": "uuid", "lat": -12.04, "lng": -77.03 }
+
+    Respuesta:
+      route_status   'EN_RUTA' | 'DESVIADO'
+      distance_m     distancia perpendicular al eje (metros)
+      snapped_lat    coordenada snapped
+      snapped_lng
+      reentry_lat    punto de reingreso más cercano (mismo que snapped por ahora)
+      reentry_lng
+    """
+    permission_classes = [IsMotorizado]
+
+    def post(self, request):
+        service_id = request.data.get('service_id')
+        lat = request.data.get('lat')
+        lng = request.data.get('lng')
+
+        if not service_id or lat is None or lng is None:
+            return Response({'error': 'service_id, lat y lng son requeridos.'}, status=400)
+
+        try:
+            lat = float(lat)
+            lng = float(lng)
+        except (TypeError, ValueError):
+            return Response({'error': 'lat y lng deben ser números.'}, status=400)
+
+        try:
+            service = Service.objects.select_related('route').get(
+                id=service_id,
+                assigned_motorizado=request.user,
+                status=Service.Status.IN_TRANSIT,
+            )
+        except Service.DoesNotExist:
+            return Response(
+                {'error': 'Servicio no encontrado, no asignado a ti, o no en tránsito.'},
+                status=404,
+            )
+
+        if not service.route:
+            return Response({'error': 'El servicio no tiene ruta asignada.'}, status=400)
+
+        snap = snap_to_route(service.route, lat, lng)
+        is_deviated = snap['distance_m'] > service.route.tolerance_meters
+
+        return Response({
+            'route_status':     'DESVIADO' if is_deviated else 'EN_RUTA',
+            'distance_m':       snap['distance_m'],
+            'snapped_lat':      snap['snapped_lat'],
+            'snapped_lng':      snap['snapped_lng'],
+            'reentry_lat':      snap['reentry_lat'],
+            'reentry_lng':      snap['reentry_lng'],
+            'tolerance_meters': service.route.tolerance_meters,
+        })
 
 
 class StatsView(APIView):
@@ -187,7 +252,7 @@ class IncidentViewSet(viewsets.ModelViewSet):
     http_method_names = ['get', 'post', 'patch', 'head', 'options']
 
     def get_permissions(self):
-        if self.action in ('list', 'retrieve', 'resolve'):
+        if self.action in ('list', 'retrieve', 'resolve', 'reassign', 'cancel_service'):
             return [IsAdmin()]
         if self.action in ('create', 'my_incidents'):
             return [IsMotorizado()]
@@ -212,6 +277,70 @@ class IncidentViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['patch'], permission_classes=[IsAdmin])
     def resolve(self, request, pk=None):
         incident = self.get_object()
-        incident.resolved = True
-        incident.save(update_fields=['resolved'])
-        return Response({'detail': 'Incidencia marcada como resuelta.', 'resolved': True})
+        if incident.resolved:
+            return Response({'error': 'La incidencia ya está resuelta.'}, status=400)
+        comment = request.data.get('admin_comment', '').strip()
+        incident.resolved     = True
+        incident.admin_comment = comment
+        incident.resolved_by  = request.user
+        incident.resolved_at  = timezone.now()
+        incident.save(update_fields=['resolved', 'admin_comment', 'resolved_by', 'resolved_at'])
+        from services.views import _notify
+        if incident.reported_by:
+            _notify(incident.reported_by, 'Incidencia resuelta', comment or 'El administrador marcó tu incidencia como resuelta.')
+        return Response(IncidentSerializer(incident, context={'request': request}).data)
+
+    @action(detail=True, methods=['patch'], permission_classes=[IsAdmin])
+    def reassign(self, request, pk=None):
+        """Reasigna el servicio de la incidencia a otro motorizado."""
+        from services.models import Service
+        from accounts.models import User as UserModel
+        incident = self.get_object()
+        motorizado_id = request.data.get('motorizado_id', '').strip()
+        comment = request.data.get('admin_comment', '').strip()
+        if not motorizado_id:
+            return Response({'error': 'motorizado_id es requerido.'}, status=400)
+        try:
+            nuevo = UserModel.objects.get(id=motorizado_id, role='motorizado', is_active=True)
+        except UserModel.DoesNotExist:
+            return Response({'error': 'Motorizado no encontrado o inactivo.'}, status=404)
+        service = incident.service
+        if service.status not in (Service.Status.APPROVED, Service.Status.IN_TRANSIT):
+            return Response({'error': 'Solo se puede reasignar un servicio aprobado o en tránsito.'}, status=400)
+        anterior = service.assigned_motorizado
+        service.assigned_motorizado = nuevo
+        service.save(update_fields=['assigned_motorizado'])
+        incident.resolved      = True
+        incident.admin_comment = comment or f'Servicio reasignado a {nuevo.full_name}.'
+        incident.resolved_by   = request.user
+        incident.resolved_at   = timezone.now()
+        incident.save(update_fields=['resolved', 'admin_comment', 'resolved_by', 'resolved_at'])
+        from services.views import _notify
+        if anterior:
+            _notify(anterior, 'Servicio reasignado', f'El servicio #{service.number} fue reasignado a otro motorizado.')
+        _notify(nuevo, 'Nueva tarea asignada', f'Se te asignó el servicio #{service.number}.')
+        return Response(IncidentSerializer(incident, context={'request': request}).data)
+
+    @action(detail=True, methods=['patch'], permission_classes=[IsAdmin])
+    def cancel_service(self, request, pk=None):
+        """Cancela el servicio asociado a la incidencia."""
+        from services.models import Service
+        incident = self.get_object()
+        comment = request.data.get('admin_comment', '').strip()
+        service = incident.service
+        cancellable = (Service.Status.PENDING, Service.Status.APPROVED, Service.Status.IN_TRANSIT)
+        if service.status not in cancellable:
+            return Response({'error': 'El servicio no puede cancelarse en su estado actual.'}, status=400)
+        service.status = Service.Status.CANCELLED
+        service.save(update_fields=['status'])
+        incident.resolved      = True
+        incident.admin_comment = comment or 'Servicio cancelado por el administrador.'
+        incident.resolved_by   = request.user
+        incident.resolved_at   = timezone.now()
+        incident.save(update_fields=['resolved', 'admin_comment', 'resolved_by', 'resolved_at'])
+        from services.views import _notify
+        if incident.reported_by:
+            _notify(incident.reported_by, 'Servicio cancelado', incident.admin_comment)
+        if service.requester:
+            _notify(service.requester, 'Servicio cancelado', incident.admin_comment)
+        return Response(IncidentSerializer(incident, context={'request': request}).data)
